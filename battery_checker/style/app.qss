@@ -1,0 +1,392 @@
+/* INA226_BatteryChecker の画面スタイル（仕様 7 章・付録 B）。INA226_Monitor v1.2.1 の app.qss に部品を足したもの。
+   色はドル記号＋波かっこで囲んだ名前で書き、theme.py の COLORS の値に置き換わる。
+   名前の末尾が _dis のものは無効時（不透明度 40%）の色。
+   フォントの種類と大きさは theme.py の ui_font() / mono_font() でコードから設定する。 */
+
+QMainWindow, QWidget#central, QDialog, QMessageBox {
+    background: ${window_bg};
+    color: ${text};
+}
+
+QToolTip {
+    background: ${panel_bg};
+    color: ${text};
+    border: 1px solid ${panel_border};
+    padding: 4px 6px;
+}
+
+/* ---------------- ヘッダー ---------------- */
+QFrame#header {
+    background: ${header_bg};
+    border: none;
+    border-bottom: 4px solid ${accent_band};
+}
+QFrame#headerDecor {
+    background: ${accent_band};
+    border: none;
+    border-radius: 2px;
+}
+QLabel#appName, QLabel#portLabel, QLabel#intervalLabel {
+    color: ${header_text};
+    background: transparent;
+}
+QLabel#measuringBadge {
+    background: ${badge_bg};
+    color: ${badge_text};
+    border-radius: 10px;
+    padding: 2px 10px;
+}
+
+/* ---------------- パネル ---------------- */
+QFrame#panel {
+    background: ${panel_bg};
+    border: 1px solid ${panel_border};
+    border-radius: 8px;
+}
+QFrame#panel QLabel {
+    background: transparent;
+    color: ${text};
+}
+QFrame#panel QLabel[role="sub"] {
+    color: ${text_sub};
+}
+QFrame#divider {
+    background: ${divider};
+    border: none;
+    min-height: 1px;
+    max-height: 1px;
+}
+QScrollArea#leftScroll, QScrollArea#leftScroll > QWidget > QWidget {
+    background: transparent;
+    border: none;
+}
+
+/* 電流の数値バッジ */
+QFrame#currentBadge {
+    background: ${current_badge_bg};
+    border: none;
+    border-radius: 6px;
+}
+QFrame#panel QFrame#currentBadge QLabel {
+    color: ${current_badge_text};
+}
+
+/* 電圧・電力・積算の 3 マス */
+QFrame#valueGrid {
+    background: ${input_bg};
+    border: 1px solid ${panel_border};
+    border-radius: 6px;
+}
+QFrame#valueCell {
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+}
+QFrame#valueCell[divider="true"] {
+    border-right: 1px solid ${panel_border};
+}
+
+/* ---------------- 入力欄 ---------------- */
+QLineEdit, QPlainTextEdit {
+    background: ${input_bg};
+    color: ${text};
+    border: 1px solid ${input_border};
+    border-radius: 6px;
+    padding: 0 8px;
+    selection-background-color: ${badge_bg};
+    selection-color: ${badge_text};
+}
+QLineEdit {
+    min-height: 30px;
+}
+QPlainTextEdit {
+    padding: 4px 6px;
+}
+QLineEdit[readOnly="true"] {
+    background: ${readonly_bg};
+    border-color: ${readonly_border};
+}
+QLineEdit:disabled, QPlainTextEdit:disabled {
+    color: ${text_dis};
+    border-color: ${input_border_dis};
+}
+
+QComboBox {
+    background: ${input_bg};
+    color: ${text};
+    border: 1px solid ${input_border};
+    border-radius: 8px;
+    padding: 0 10px;
+    min-height: 34px;
+}
+QComboBox:disabled {
+    background: ${input_bg_dis};
+    color: ${text_dis};
+    border-color: ${input_border_dis};
+}
+QComboBox::drop-down {
+    border: none;
+    width: 24px;
+}
+QComboBox::down-arrow {
+    image: url(${style_dir}/arrow_down.png);
+    width: 12px;
+    height: 8px;
+    margin-right: 8px;
+}
+QComboBox::down-arrow:disabled {
+    image: url(${style_dir}/arrow_down_disabled.png);
+}
+QComboBox QAbstractItemView {
+    background: ${input_bg};
+    color: ${text};
+    selection-background-color: ${badge_bg};
+    selection-color: ${badge_text};
+}
+
+QCheckBox {
+    color: ${text};
+    background: transparent;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid ${input_border};
+    border-radius: 4px;
+    background: ${input_bg};
+}
+QCheckBox::indicator:checked {
+    background: ${badge_bg};
+    border-color: ${badge_bg};
+    image: url(${style_dir}/check.png);
+}
+
+/* ---------------- ボタン ---------------- */
+QPushButton {
+    background: ${input_bg};
+    color: ${text};
+    border: 1px solid ${input_border};
+    border-radius: 8px;
+    padding: 0 12px;
+    min-height: 30px;
+}
+QPushButton:hover {
+    border-color: ${text};
+}
+QPushButton:pressed {
+    background: ${readonly_bg};
+}
+QPushButton:disabled {
+    background: ${input_bg_dis};
+    color: ${text_dis};
+    border-color: ${input_border_dis};
+}
+QPushButton#refreshButton {
+    min-height: 34px;
+    padding: 0 14px;
+}
+QPushButton#zeroButton {
+    border-color: ${text};
+}
+QPushButton#zeroButton:disabled {
+    border-color: ${text_dis};
+}
+
+/* 開始・停止・保存 */
+QPushButton#startButton, QPushButton#stopButton, QPushButton#saveButton {
+    border: none;
+    border-radius: 8px;
+    padding: 0 28px;
+    min-height: 52px;
+    min-width: 84px;
+}
+QPushButton#startButton { background: ${start_bg}; color: ${start_text}; }
+QPushButton#stopButton { background: ${stop_bg}; color: ${stop_text}; }
+QPushButton#saveButton { background: ${save_bg}; color: ${save_text}; }
+QPushButton#startButton:disabled { background: ${start_bg_dis}; color: ${start_text_dis}; }
+QPushButton#stopButton:disabled { background: ${stop_bg_dis}; color: ${stop_text_dis}; }
+QPushButton#saveButton:disabled { background: ${save_bg_dis}; color: ${save_text_dis}; }
+
+/* 表示範囲の切り替え（ひとつながりのボタン） */
+QFrame#rangeGroup {
+    background: ${input_bg};
+    border: 1px solid ${input_border};
+    border-radius: 8px;
+}
+QFrame#rangeGroup QPushButton {
+    background: ${input_bg};
+    color: ${text};
+    border: none;
+    border-radius: 0;
+    min-height: 28px;
+    padding: 0 12px;
+}
+QFrame#rangeGroup QPushButton[pos="first"] {
+    border-top-left-radius: 7px;
+    border-bottom-left-radius: 7px;
+}
+QFrame#rangeGroup QPushButton[pos="last"] {
+    border-top-right-radius: 7px;
+    border-bottom-right-radius: 7px;
+}
+QFrame#rangeGroup QPushButton:checked {
+    background: ${range_sel_bg};
+    color: ${range_sel_text};
+}
+
+/* ---------------- グラフ ---------------- */
+QLabel#currentAxisLabel {
+    color: ${current_label};
+}
+QLabel#voltageAxisLabel {
+    color: ${voltage_label};
+}
+
+/* ---------------- ステータスバー ---------------- */
+QStatusBar {
+    background: ${status_bg};
+    color: ${status_text};
+    min-height: 28px;
+}
+QStatusBar::item {
+    border: none;
+}
+QStatusBar QLabel {
+    background: transparent;
+    color: ${status_text};
+    padding: 0 8px;
+}
+QStatusBar QPushButton {
+    min-height: 20px;
+    padding: 0 8px;
+    border-radius: 6px;
+}
+
+/* ---------------- メニュー（ゼロ点補正の右クリック） ---------------- */
+QMenu {
+    background: ${panel_bg};
+    color: ${text};
+    border: 1px solid ${panel_border};
+    padding: 4px;
+}
+QMenu::item {
+    padding: 4px 16px;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background: ${badge_bg};
+    color: ${badge_text};
+}
+QMenu::item:disabled {
+    color: ${text_dis};
+}
+
+/* ================ INA226_BatteryChecker で追加 ================ */
+QLabel#lotLabel {
+    color: ${header_text};
+    background: transparent;
+}
+QPushButton#headerButton {
+    min-height: 34px;
+    padding: 0 14px;
+}
+
+/* 電圧の数値バッジ（INA226_Monitor の電流バッジと同じ見た目） */
+QFrame#voltageBadge {
+    background: ${voltage_badge_bg};
+    border: none;
+    border-radius: 6px;
+}
+QFrame#panel QFrame#voltageBadge QLabel {
+    color: ${voltage_badge_text};
+}
+
+/* 接続状態（バッテリ未接続／変動中／安定） */
+QFrame#panel QLabel#batteryState[state="none"] { color: ${state_none}; }
+QFrame#panel QLabel#batteryState[state="unstable"] { color: ${state_unstable}; }
+QFrame#panel QLabel#batteryState[state="stable"] { color: ${state_stable}; }
+
+/* 記録ボタン（開始ボタンと同じ朽葉色） */
+QPushButton#recordButton {
+    background: ${record_bg};
+    color: ${record_text};
+    border: none;
+    border-radius: 8px;
+    min-height: 72px;
+}
+QPushButton#recordButton:disabled {
+    background: ${record_bg_dis};
+    color: ${record_text_dis};
+}
+
+/* 直前の結果 */
+QFrame#resultBox {
+    background: ${input_bg};
+    border: 1px solid ${panel_border};
+    border-radius: 6px;
+}
+QFrame#resultBox[judge="ok"] { background: ${ok_bg}; border: none; }
+QFrame#resultBox[judge="ng"] { background: ${ng_bg}; border: none; }
+QFrame#panel QFrame#resultBox QLabel { color: ${text_sub}; }
+QFrame#panel QFrame#resultBox[judge="ok"] QLabel { color: ${ok_text}; }
+QFrame#panel QFrame#resultBox[judge="ng"] QLabel { color: ${ng_text}; }
+
+/* 出力・新しいロット・ロット終了 */
+QPushButton#exportButton, QPushButton#newLotButton, QPushButton#endLotButton {
+    border-radius: 8px;
+    padding: 0 22px;
+    min-height: 44px;
+}
+QPushButton#exportButton { background: ${save_bg}; color: ${save_text}; border: none; }
+QPushButton#exportButton:disabled { background: ${save_bg_dis}; color: ${save_text_dis}; }
+
+/* 入力欄の誤り（ロットの開始ダイアログ） */
+QLineEdit[invalid="true"] {
+    border: 2px solid ${ng_bg};
+}
+
+/* 一覧 */
+QTableView {
+    background: ${input_bg};
+    alternate-background-color: ${panel_bg};
+    color: ${text};
+    border: 1px solid ${panel_border};
+    border-radius: 6px;
+    gridline-color: ${panel_border};
+    selection-background-color: ${badge_bg};
+    selection-color: ${badge_text};
+}
+QHeaderView::section {
+    background: ${header_bg};
+    color: ${header_text};
+    border: none;
+    border-right: 1px solid ${graph_grid};
+    padding: 4px 8px;
+}
+QTableCornerButton::section {
+    background: ${header_bg};
+    border: none;
+}
+
+/* 集計行 */
+QLabel#summaryLabel {
+    color: ${text};
+    background: transparent;
+    padding: 0 14px;
+}
+
+/* ステータス欄の赤字 */
+QStatusBar QLabel[error="true"] {
+    color: ${error_text};
+    font-weight: bold;
+}
+
+QDoubleSpinBox, QSpinBox {
+    background: ${input_bg};
+    color: ${text};
+    border: 1px solid ${input_border};
+    border-radius: 6px;
+    padding: 0 6px;
+    min-height: 30px;
+}

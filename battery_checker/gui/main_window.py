@@ -1,0 +1,1050 @@
+"""メインウィンドウ（仕様 6・7 章）。接続 → ロット開始 → 記録（5 回測定の中央値）→ 出力 の流れをまとめる。
+
+ヘッダー・左パネル・ステータスバーの組み立て方は INA226_Monitor v1.2.1 の main_window.py にならう。
+"""
+
+from __future__ import annotations
+
+import logging
+import queue
+import time
+from datetime import datetime
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QStatusBar,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .. import APP_NAME, __version__, sound
+from ..export import Conditions, ExportError, export_lot
+from ..measure import BatteryMonitor, BatteryState, CollectResult, SampleCollector
+from ..paths import AppPaths, default_save_dir
+from ..protocol import (
+    CHECKER_INTERVAL_MS,
+    DEFAULT_INTERVAL_MS,
+    LineKind,
+    parse_firmware_banner,
+    parse_interval_ack,
+)
+from ..records import DATETIME_FMT, LotInfo, Record, RecordBook, compute_stats, make_record, summary_text
+from ..serial_io import PortOpenError, SerialReader, list_ports, open_port
+from ..settings import Settings
+from ..theme import app_icon, mono_font, ui_font
+from ..workfile import WorkFile, cleanup_finished, find_unfinished, finish_lot, load_lot, new_lot_id, read_records
+from .dialogs import LotDialog, LotInput, SettingsDialog
+from .plot_panel import DistributionPlot
+from .record_table import RecordTablePanel
+from .widgets import ElideLabel, FitLabel, divider, sub_label
+
+log = logging.getLogger(__name__)
+
+POLL_INTERVAL_MS = 20  # 受信キューを見る間隔（記録の応答を速くするため短く）
+DISPLAY_INTERVAL_MS = 200  # 電圧表示の更新間隔（F-03）
+NO_DATA_TIMEOUT_S = 5.0
+LEFT_PANEL_WIDTH = 360
+
+MSG_NO_PORT = "Arduino が見つかりません。USB の接続を確認してください"
+MSG_NOT_CONNECTED = "Arduino に接続してください（ポートを選んで「接続」）"
+MSG_NO_LOT = "ロットを始めてください（「新しいロット」）"
+MSG_NO_BATTERY = "バッテリが接続されていません"
+MSG_NO_DATA = "データが届いていません"
+MSG_DISCONNECTED = "Arduino との接続が切れました"
+MSG_OLD_SKETCH = "Arduino のスケッチが周期変更に対応していません（50 ms で記録します）"
+MSG_DUPLICATE = "前回と同じバッテリのようです。もう一度記録しますか？"
+MSG_WORKFILE_ERROR = "作業ファイルに書き込めません"
+
+STATE_TEXT = {
+    BatteryState.NO_DATA: ("データ待ち", "none"),
+    BatteryState.NONE: ("バッテリ未接続", "none"),
+    BatteryState.UNSTABLE: ("変動中", "unstable"),
+    BatteryState.STABLE: ("安定", "stable"),
+}
+
+_TEXT_INPUTS = (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)
+_RECORD_KEYS = (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter)
+
+
+def _repolish(w: QWidget) -> None:
+    w.style().unpolish(w)
+    w.style().polish(w)
+    for child in w.findChildren(QWidget):
+        child.style().unpolish(child)
+        child.style().polish(child)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, paths: AppPaths, mock: bool = False, mock_speed: float = 1.0) -> None:
+        super().__init__()
+        self.paths = paths
+        self.mock = mock
+        self.mock_speed = mock_speed
+        self.settings = Settings.load(paths.settings_file)
+        if not self.settings.save_dir:
+            self.settings.save_dir = str(default_save_dir())
+
+        # 接続
+        self.reader: SerialReader | None = None
+        self.rx_queue: queue.Queue = queue.Queue()
+        self._device = ""
+        self.interval_ack: tuple[int, int] | None = None
+        self.interval_no_ack = False
+        self.firmware_version: int | None = None
+        self.invalid_count = 0
+        self._last_data_mono = 0.0
+        self._no_data_shown = False
+        self._last_display = 0.0
+        # 測定
+        self.monitor = BatteryMonitor(self.settings.connect_threshold_V, self.settings.stable_width_mV / 1000)
+        self.collector: SampleCollector | None = None
+        self._pressed_mono = 0.0
+        self.last_latency_s: float | None = None  # 記録ボタンから結果表示まで（AC-15 の確認用）
+        self.remeasure_no: int | None = None
+        # ロット
+        self.lot: LotInfo | None = None
+        self.book: RecordBook | None = None
+        self.workfile: WorkFile | None = None
+        self._saved_folder: Path | None = None
+
+        self.setWindowTitle(f"{APP_NAME} v{__version__}")
+        self.setWindowIcon(app_icon())
+        self.resize(1280, 800)
+        self.setMinimumSize(1024, 700)
+        self._build_ui()
+
+        self.poll_timer = QTimer(self)
+        self.poll_timer.setInterval(POLL_INTERVAL_MS)
+        self.poll_timer.timeout.connect(self._poll)
+
+        QShortcut(QKeySequence.Undo, self, activated=self.on_undo)  # Ctrl+Z
+        QShortcut(QKeySequence(Qt.Key_Escape), self, activated=self.cancel_remeasure)
+        QApplication.instance().installEventFilter(self)
+
+        self.refresh_ports()
+        self._show_lot()
+        self._update_display(force=True)
+        self.set_message("準備完了")
+
+    # ================================================================ UI
+    def _build_ui(self) -> None:
+        central = QWidget()
+        central.setObjectName("central")
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_header())
+
+        body = QHBoxLayout()
+        body.setContentsMargins(12, 12, 12, 8)
+        body.setSpacing(12)
+        body.addWidget(self._build_left())
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        self.table = RecordTablePanel()
+        self.table.view.selectionModel().selectionChanged.connect(lambda *_: self._update_buttons())
+        self.plot = DistributionPlot()
+        right.addWidget(self.table, 55)
+        right.addWidget(self.plot, 45)
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        actions.addStretch(1)
+        self.new_lot_button = self._button("新しいロット", "newLotButton", self.on_new_lot, 15)
+        self.export_button = self._button("出力（CSV・Excel）", "exportButton", self.on_export, 15)
+        self.end_lot_button = self._button("ロット終了", "endLotButton", self.on_end_lot, 15)
+        for b in (self.new_lot_button, self.export_button, self.end_lot_button):
+            b.setMinimumWidth(130)
+            actions.addWidget(b)
+        right.addLayout(actions)
+        body.addLayout(right, 1)
+        root.addLayout(body, 1)
+
+        self.summary_label = QLabel()
+        self.summary_label.setObjectName("summaryLabel")
+        self.summary_label.setFont(mono_font(14, bold=True))
+        self.summary_label.setFixedHeight(30)
+        self.summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(self.summary_label)
+        self.setCentralWidget(central)
+        self._build_status_bar()
+
+    def _button(self, text: str, name: str, slot, px: int = 14, bold: bool = True) -> QPushButton:
+        b = QPushButton(text)
+        b.setObjectName(name)
+        b.setFont(ui_font(px, bold=bold))
+        b.setFocusPolicy(Qt.NoFocus)  # Space／Enter は記録に使うので、ボタンにフォーカスを持たせない
+        b.clicked.connect(slot)
+        return b
+
+    def _build_header(self) -> QFrame:
+        header = QFrame()
+        header.setObjectName("header")
+        header.setFixedHeight(56)
+        lay = QHBoxLayout(header)
+        lay.setContentsMargins(16, 8, 16, 12)
+        lay.setSpacing(10)
+        decor = QHBoxLayout()
+        decor.setSpacing(3)
+        for _ in range(4):  # 端子台を模した飾り（INA226_Monitor と同じ）
+            bar = QFrame()
+            bar.setObjectName("headerDecor")
+            bar.setFixedSize(5, 20)
+            decor.addWidget(bar)
+        lay.addLayout(decor)
+        name = QLabel(APP_NAME)
+        name.setObjectName("appName")
+        name.setFont(ui_font(19, bold=True))
+        lay.addWidget(name)
+        lay.addSpacing(12)
+        self.lot_label = ElideLabel()
+        self.lot_label.setObjectName("lotLabel")
+        self.lot_label.setFont(ui_font(14, bold=True))
+        lay.addWidget(self.lot_label, 1)
+        self.settings_button = self._button("設定", "headerButton", self.on_settings, 13, bold=False)
+        lay.addWidget(self.settings_button)
+        lay.addSpacing(6)
+        port_label = QLabel("ポート")
+        port_label.setObjectName("portLabel")
+        port_label.setFont(ui_font(13))
+        lay.addWidget(port_label)
+        self.port_combo = QComboBox()
+        self.port_combo.setFont(ui_font(14))
+        self.port_combo.setMinimumWidth(180)
+        self.port_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.port_combo.setMinimumContentsLength(18)
+        self.port_combo.setFocusPolicy(Qt.NoFocus)
+        self.port_combo.currentIndexChanged.connect(lambda *_: self._update_buttons())
+        lay.addWidget(self.port_combo)
+        self.refresh_button = self._button("更新", "refreshButton", self.refresh_ports, 14, bold=False)
+        lay.addWidget(self.refresh_button)
+        self.connect_button = self._button("接続", "refreshButton", self.on_connect_toggle, 14)
+        self.connect_button.setMinimumWidth(72)
+        lay.addWidget(self.connect_button)
+        return header
+
+    def _build_left(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("panel")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(10)
+
+        # 1. 「電圧」見出しと接続状態
+        row = QHBoxLayout()
+        heading = QLabel("電圧")
+        heading.setFont(ui_font(13, bold=True))
+        row.addWidget(heading)
+        row.addStretch(1)
+        self.state_label = QLabel()
+        self.state_label.setObjectName("batteryState")
+        self.state_label.setFont(ui_font(14, bold=True))
+        row.addWidget(self.state_label)
+        lay.addLayout(row)
+
+        # 2. 電圧の数値バッジ
+        badge = QFrame()
+        badge.setObjectName("voltageBadge")
+        bl = QHBoxLayout(badge)
+        bl.setContentsMargins(14, 4, 14, 4)
+        bl.setSpacing(8)
+        self.voltage_label = FitLabel(mono_font(46, bold=True), min_px=24)
+        bl.addWidget(self.voltage_label, 1)
+        unit = QLabel("V")
+        unit.setFont(ui_font(20, bold=True))
+        bl.addWidget(unit, 0, Qt.AlignBottom)
+        lay.addWidget(badge)
+
+        # 3. 次の番号
+        self.next_label = QLabel()
+        self.next_label.setFont(ui_font(28, bold=True))
+        self.next_label.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self.next_label)
+
+        # 4. 記録ボタン
+        self.record_button = self._button("● 記録（Space）", "recordButton", self.on_record, 22)
+        self.record_button.setFixedHeight(72)
+        lay.addWidget(self.record_button)
+
+        # 5. 直前の結果
+        self.result_box = QFrame()
+        self.result_box.setObjectName("resultBox")
+        rl = QVBoxLayout(self.result_box)
+        rl.setContentsMargins(12, 8, 12, 8)
+        rl.setSpacing(2)
+        self.result_main = FitLabel(ui_font(24, bold=True), min_px=14)
+        self.result_main.setAlignment(Qt.AlignCenter)
+        self.result_sub = QLabel()
+        self.result_sub.setFont(ui_font(13, bold=True))
+        self.result_sub.setAlignment(Qt.AlignCenter)
+        self.result_sub.setWordWrap(True)
+        rl.addWidget(self.result_main)
+        rl.addWidget(self.result_sub)
+        self.result_box.setMinimumHeight(86)
+        lay.addWidget(self.result_box)
+
+        # 6. 取り消し・測り直し
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.undo_button = self._button("1 つ前を取り消す（Ctrl+Z）", "undoButton", self.on_undo, 13, bold=False)
+        self.remeasure_button = self._button("この番号を測り直す", "remeasureButton", self.on_remeasure, 13, bold=False)
+        for b in (self.undo_button, self.remeasure_button):
+            b.setMinimumHeight(38)
+            row.addWidget(b, 1)
+        lay.addLayout(row)
+
+        # 7. 下限・上限
+        lay.addWidget(divider())
+        row = QHBoxLayout()
+        self.limits_label = QLabel()
+        self.limits_label.setFont(mono_font(14, bold=True))
+        row.addWidget(sub_label("判定"))
+        row.addWidget(self.limits_label, 1)
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        self.lot_detail_label = sub_label("", 12)
+        self.lot_detail_label.setWordWrap(True)
+        row.addWidget(self.lot_detail_label, 1)
+        self.lot_settings_button = self._button("ロット設定…", "lotSettingsButton", self.on_lot_settings, 13, bold=False)
+        row.addWidget(self.lot_settings_button, 0, Qt.AlignTop)
+        lay.addLayout(row)
+        lay.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("leftScroll")
+        scroll.setWidget(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedWidth(LEFT_PANEL_WIDTH)
+        scroll.setFocusPolicy(Qt.NoFocus)
+        return scroll
+
+    def _build_status_bar(self) -> None:
+        sb = QStatusBar()
+        sb.setSizeGripEnabled(False)
+        self.conn_label = QLabel()
+        self.interval_label = QLabel()
+        self.invalid_label = QLabel()
+        self.saved_label = QLabel()
+        self.msg_label = QLabel()
+        self.msg_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.open_folder_button = QPushButton("フォルダを開く")
+        self.open_folder_button.setFocusPolicy(Qt.NoFocus)
+        self.open_folder_button.setVisible(False)
+        self.open_folder_button.clicked.connect(self._open_saved_folder)
+        for w in (self.conn_label, self.interval_label, self.invalid_label, self.saved_label, self.msg_label,
+                  self.open_folder_button):
+            w.setFont(ui_font(12))
+        for w in (self.conn_label, self.interval_label, self.invalid_label, self.saved_label):
+            sb.addWidget(w)
+        sb.addPermanentWidget(self.msg_label)
+        sb.addPermanentWidget(self.open_folder_button)
+        self.setStatusBar(sb)
+
+    # ================================================================ メッセージ（テストで差し替えられるよう 1 か所に）
+    def set_message(self, text: str, error: bool = False) -> None:
+        self.msg_label.setText(text)
+        if bool(self.msg_label.property("error")) != error:
+            self.msg_label.setProperty("error", error)
+            self.msg_label.style().unpolish(self.msg_label)
+            self.msg_label.style().polish(self.msg_label)
+        if text:
+            self.open_folder_button.setVisible(False)
+
+    def _warn(self, text: str) -> None:
+        QMessageBox.warning(self, APP_NAME, text)
+
+    def _info(self, text: str) -> None:
+        QMessageBox.information(self, APP_NAME, text)
+
+    def _ask(self, text: str, choices: list[tuple[str, str]], escape: str) -> str:
+        """ボタンを選ばせる。choices は (キー, ボタンの文字)。閉じたら escape のキー。"""
+        box = QMessageBox(self)
+        box.setWindowTitle(APP_NAME)
+        box.setIcon(QMessageBox.Question)
+        box.setText(text)
+        buttons = {box.addButton(label, QMessageBox.ActionRole): key for key, label in choices}
+        box.setDefaultButton(next(iter(buttons)))
+        for b, key in buttons.items():
+            if key == escape:
+                box.setEscapeButton(b)
+        box.exec()
+        return buttons.get(box.clickedButton(), escape)
+
+    def _ask_export_folder(self) -> str:
+        return QFileDialog.getExistingDirectory(self, "出力先フォルダ", self.settings.save_dir)
+
+    def _ask_lot(self, initial: LotInput, editing: bool) -> LotInput | None:
+        dlg = LotDialog(self, initial, editing)
+        return dlg.value() if dlg.exec() == LotDialog.Accepted else None
+
+    # ================================================================ 表示更新
+    def _update_buttons(self) -> None:
+        connected = self.reader is not None
+        measuring = self.collector is not None
+        has_lot = self.lot is not None and self.book is not None
+        n = len(self.book) if self.book else 0
+        battery = self.monitor.connected
+        selected = self.table.selected_no() is not None
+        self.record_button.setEnabled(connected and has_lot and battery and not measuring)
+        self.undo_button.setEnabled(has_lot and n > 0 and not measuring)
+        self.remeasure_button.setEnabled(
+            connected and has_lot and not measuring and (selected or self.remeasure_no is not None)
+        )
+        self.export_button.setEnabled(has_lot and n > 0 and not measuring)
+        self.new_lot_button.setEnabled(not measuring)
+        self.end_lot_button.setEnabled(has_lot and not measuring)
+        self.lot_settings_button.setEnabled(has_lot and not measuring)
+        self.settings_button.setEnabled(not measuring)
+        self.port_combo.setEnabled(not connected and not measuring)
+        self.refresh_button.setEnabled(not connected and not measuring)
+        self.connect_button.setEnabled(not measuring and (connected or bool(self.port_combo.currentData())))
+        self.connect_button.setText("切断" if connected else "接続")
+        if self.remeasure_no is not None:
+            self.record_button.setText(f"● No.{self.remeasure_no} を測り直す（Space）")
+            self.remeasure_button.setText("測り直しをやめる（Esc）")
+        else:
+            self.record_button.setText("● 記録（Space）")
+            self.remeasure_button.setText("この番号を測り直す")
+
+    def _update_display(self, force: bool = False) -> None:
+        """電圧表示・接続状態・ステータス欄（200 ms ごと）。"""
+        now = time.monotonic()
+        if not force and now - self._last_display < DISPLAY_INTERVAL_MS / 1000:
+            return
+        self._last_display = now
+        if self.reader is None:
+            self.voltage_label.setText("---")
+            text, state = "Arduino 未接続", "none"
+        else:
+            v = self.monitor.last_V
+            self.voltage_label.setText("---" if v is None else f"{v:.4f}")
+            text, state = STATE_TEXT[self.monitor.state]
+        if self.collector is not None:
+            text = "測定中…"
+        if self.state_label.text() != text or self.state_label.property("state") != state:
+            self.state_label.setText(text)
+            self.state_label.setProperty("state", state)
+            self.state_label.style().unpolish(self.state_label)
+            self.state_label.style().polish(self.state_label)
+        self._update_status()
+        self._update_buttons()
+
+    def _update_status(self) -> None:
+        self.conn_label.setText(f"接続中：{self._device}" if self.reader else "未接続")
+        if self.reader is None:
+            interval = "周期 --"
+        elif self.interval_ack is not None:
+            interval = f"周期 {self.interval_ack[0]} ms"
+        elif self.interval_no_ack:
+            interval = f"周期 {DEFAULT_INTERVAL_MS} ms（スケッチ未対応）"
+        else:
+            interval = "周期 確認中"
+        self.interval_label.setText(interval)
+        self.invalid_label.setText(f"不正行：{self.invalid_count:,}")
+        t = self.workfile.last_saved if self.workfile else None
+        saved = time.strftime("%H:%M:%S", time.localtime(t)) if t else "--:--:--"
+        mark = "（未保存あり）" if self.workfile and self.workfile.dirty else ""
+        self.saved_label.setText(f"作業ファイル保存：{saved}{mark}")
+
+    def _show_lot(self) -> None:
+        """ロットが変わったとき：ヘッダー・判定・一覧・グラフ・集計を描き直す。"""
+        lot, book = self.lot, self.book
+        if lot is None or book is None:
+            self.lot_label.setText("ロットなし")
+            self.limits_label.setText("---")
+            self.lot_detail_label.setText("「新しいロット」で始めます")
+            self.table.model.set_book(RecordBook())
+            self.plot.set_limits(None, None)
+        else:
+            self.lot_label.setText(f"{lot.lot_name} ／ {lot.limits_text()}")
+            self.limits_label.setText(f"{lot.lower_V:.3f} 〜 {lot.upper_V:.3f} V")
+            who = f"測定者 {lot.operator}　" if lot.operator else ""
+            self.lot_detail_label.setText(f"{who}開始 {lot.started_at}")
+            self.table.model.set_book(book)
+            self.plot.set_limits(lot.lower_V, lot.upper_V)
+            self.table.select_no(book.last.no if book.last else None)
+        self._refresh_records()
+        self._show_result(None)
+        self._update_buttons()
+        self._update_status()
+
+    def _refresh_records(self) -> None:
+        book = self.book
+        self.next_label.setText(f"次は No.{book.next_no}" if book else "次は ---")
+        self.plot.refresh(book)
+        self.summary_label.setText(summary_text(compute_stats(book.records)) if book else "")
+
+    def _show_result(self, rec: Record | None, sub: str = "", main: str | None = None, judge: str = "") -> None:
+        if rec is not None:
+            mark = "⚠ " if rec.has_warning else ""
+            ok_text = "OK" if rec.judge.is_ok else "NG"
+            main = f"{mark}No.{rec.no}　{rec.voltage_V:.4f} V　{ok_text}"
+            judge = "ok" if rec.judge.is_ok else "ng"
+            notes = [] if rec.judge.is_ok else [rec.judge.label]
+            if rec.note:
+                notes.append(rec.note)
+            if sub:
+                notes.insert(0, sub)
+            sub = "　".join(notes)
+        if main is None:
+            if self.remeasure_no is not None:
+                main, sub = f"No.{self.remeasure_no} を測り直します", "そのバッテリを繋いで「記録」（やめるときは Esc）"
+            else:
+                main = "---"
+        self.result_main.setText(main)
+        self.result_sub.setText(sub)
+        if self.result_box.property("judge") != judge:
+            self.result_box.setProperty("judge", judge)
+            _repolish(self.result_box)
+
+    # ================================================================ F-01 ポート・接続
+    def refresh_ports(self) -> None:
+        current = self.port_combo.currentData() or self.settings.last_port
+        self.port_combo.clear()
+        ports = list_ports(include_mock=self.mock)
+        for p in ports:
+            self.port_combo.addItem(p.label, p.device)
+        if not ports:
+            self.port_combo.addItem("（ポートがありません）", "")
+            self.set_message(MSG_NO_PORT)
+        else:
+            idx = self.port_combo.findData(current)
+            self.port_combo.setCurrentIndex(max(idx, 0))
+            if self.msg_label.text() == MSG_NO_PORT:
+                self.set_message("")
+        self._update_buttons()
+
+    def select_port(self, device: str) -> None:
+        self.port_combo.setCurrentIndex(self.port_combo.findData(device))
+
+    def on_connect_toggle(self) -> None:
+        if self.reader is not None:
+            self.disconnect_port()
+        else:
+            self.connect_port()
+
+    def connect_port(self) -> bool:
+        if self.reader is not None or self.collector is not None:
+            return False
+        device = self.port_combo.currentData()
+        if not device:
+            self.set_message(MSG_NO_PORT)
+            return False
+        try:
+            port = open_port(device, self.mock_speed)
+        except PortOpenError as e:
+            self.set_message(str(e), error=True)
+            self._warn(str(e))
+            return False
+        self._device = device
+        self.interval_ack = None
+        self.interval_no_ack = False
+        self.firmware_version = None
+        self.invalid_count = 0
+        self._last_data_mono = time.monotonic()
+        self._no_data_shown = False
+        self.monitor.reset()
+        self.rx_queue = queue.Queue()
+        self.reader = SerialReader(port, self.rx_queue, interval_ms=CHECKER_INTERVAL_MS)
+        self.reader.start()
+        self.poll_timer.start()
+        self.settings.last_port = device
+        self.settings.save(self.paths.settings_file)
+        self.set_message(f"{device} に接続しました")
+        self._update_display(force=True)
+        return True
+
+    def disconnect_port(self, message: str = "切断しました") -> None:
+        self._cancel_collect()
+        if self.reader is not None:
+            self.reader.stop()
+            self.reader = None
+        self.poll_timer.stop()
+        self.monitor.reset()
+        self.set_message(message)
+        self._update_display(force=True)
+
+    def _poll(self) -> None:
+        """受信キューを空にする（20 ms ごと）。データ行は監視と 5 回測定に渡す。"""
+        if self.reader is None:
+            return
+        disconnected = None
+        got_data = False
+        status_changed = False  # 周期の表示が変わった（すぐ描き直す）
+        was_connected = self.monitor.connected
+        while True:
+            try:
+                ev = self.rx_queue.get_nowait()
+            except queue.Empty:
+                break
+            kind = ev[0]
+            if kind == "line":
+                parsed, pc_time = ev[1], ev[2]
+                if parsed.kind is LineKind.DATA:
+                    v = parsed.row.bus_V
+                    self.monitor.feed(v, pc_time)
+                    got_data = True
+                    if self.collector is not None:
+                        res = self.collector.feed(v, pc_time)
+                        if res is not None:
+                            self._finish_collect(res)
+                elif parsed.kind is LineKind.COMMENT:
+                    self._on_comment(parsed.text)
+                    status_changed = True
+                elif parsed.kind is LineKind.HEADER:
+                    status_changed = True
+                    self.interval_ack = None  # Arduino がリセットされた。受信スレッドが周期変更を送り直す
+                    self.interval_no_ack = False
+                elif parsed.kind is LineKind.INVALID:
+                    self.invalid_count += 1
+            elif kind == "interval_no_ack":
+                self.interval_no_ack = True
+                status_changed = True
+                log.warning("%s（%s, fw=%s）", MSG_OLD_SKETCH, self._device, self.firmware_version)
+                self.set_message(MSG_OLD_SKETCH)
+            elif kind == "disconnected":
+                disconnected = ev[1]
+        if self.collector is not None:
+            res = self.collector.poll(time.time())
+            if res is not None:
+                self._finish_collect(res)
+        now = time.monotonic()
+        if got_data:
+            self._last_data_mono = now
+            if self._no_data_shown:
+                self._no_data_shown = False
+                self.set_message("")
+        elif now - self._last_data_mono > NO_DATA_TIMEOUT_S and not self._no_data_shown:
+            self._no_data_shown = True
+            log.warning("データが届いていません（%s）", self._device)
+            self.set_message(MSG_NO_DATA)
+        # バッテリの付け外しは記録ボタンの有効・無効に関わるので、すぐ描き直す
+        self._update_display(force=status_changed or self.monitor.connected != was_connected)
+        if disconnected is not None:
+            log.warning("%s: %s", MSG_DISCONNECTED, disconnected)
+            self.disconnect_port(MSG_DISCONNECTED)
+            self.set_message(MSG_DISCONNECTED, error=True)
+            self._warn(f"{MSG_DISCONNECTED}。記録済みのデータは作業ファイルに残っています。USB を繋ぎ直して「接続」してください")
+
+    def _on_comment(self, text: str) -> None:
+        fw = parse_firmware_banner(text)
+        if fw is not None:
+            self.firmware_version = fw
+        ack = parse_interval_ack(text)
+        if ack is not None:
+            self.interval_ack = ack
+            self.interval_no_ack = False
+            self.set_message(f"送信周期 {ack[0]} ms（INA226 平均 {ack[1]} 回）で受信しています")
+            return
+        if text.startswith("# error"):
+            log.warning("Arduino からのエラー: %s", text)
+        self.set_message(text)
+
+    def effective_interval_ms(self) -> int | None:
+        if self.interval_ack is not None:
+            return self.interval_ack[0]
+        if self.interval_no_ack:
+            return DEFAULT_INTERVAL_MS
+        return None
+
+    # ================================================================ F-04 記録
+    def eventFilter(self, obj: QObject, ev: QEvent) -> bool:  # noqa: N802
+        """Space／Enter で記録する（文字の入力欄にカーソルがあるときは入力を優先する）。"""
+        if ev.type() != QEvent.KeyPress or ev.key() not in _RECORD_KEYS:
+            return False
+        if ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+            return False
+        if not isinstance(obj, QWidget) or obj.window() is not self:
+            return False
+        if QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None:
+            return False
+        if isinstance(QApplication.focusWidget(), _TEXT_INPUTS):
+            return False
+        if not ev.isAutoRepeat():  # 押しっぱなしでは続けて記録しない
+            self.on_record()
+        return True
+
+    def on_record(self) -> None:
+        if self.collector is not None:
+            return  # 集めている間の再入力は無視する
+        if self.reader is None:
+            self.set_message(MSG_NOT_CONNECTED, error=True)
+            return
+        if self.lot is None or self.book is None:
+            self.set_message(MSG_NO_LOT, error=True)
+            return
+        if not self.monitor.connected:
+            self.set_message(MSG_NO_BATTERY, error=True)
+            self._show_result(None, main=MSG_NO_BATTERY, sub="バッテリを繋いでから記録してください")
+            return
+        if (
+            self.remeasure_no is None
+            and self.settings.confirm_duplicate
+            and len(self.book) > 0
+            and not self.monitor.detached_since_mark
+        ):
+            ans = self._ask(MSG_DUPLICATE, [("record", "記録する"), ("cancel", "やめる")], escape="cancel")
+            if ans != "record":
+                self.set_message("記録をやめました")
+                return
+            if self.reader is None or not self.monitor.connected:
+                self.set_message(MSG_NO_BATTERY, error=True)
+                return
+        self._pressed_mono = time.monotonic()
+        self.collector = SampleCollector(time.time(), self.monitor.threshold_V)
+        self._show_result(None, main="測定中…", sub="")
+        self._update_display(force=True)
+
+    def _cancel_collect(self) -> None:
+        if self.collector is not None:
+            self.collector = None
+            self._show_result(None)
+
+    def _finish_collect(self, res: CollectResult) -> None:
+        self.collector = None
+        if not res.ok:
+            msg = res.failure.value
+            self.set_message(msg, error=True)
+            self._show_result(None, main="記録していません", sub=msg)
+            self._update_display(force=True)
+            return
+        lot, book = self.lot, self.book
+        m = res.measurement
+        when = datetime.now()
+        width = self.settings.stable_width_mV / 1000
+        if self.remeasure_no is not None and book.get(self.remeasure_no) is not None:
+            no = self.remeasure_no
+            rec = book.replace(no, make_record(no, m, lot.lower_V, lot.upper_V, width, when))
+            self.remeasure_no = None
+            self.table.model.changed(no)
+            appended = False
+            sub = f"測り直しました（{rec.remeasured} 回目）"
+        else:
+            self.remeasure_no = None
+            rec = book.append(make_record(book.next_no, m, lot.lower_V, lot.upper_V, width, when))
+            self.table.model.appended()
+            appended = True
+            sub = ""
+        lot.revision += 1
+        lot.port = self._device
+        lot.interval_ms = self.effective_interval_ms()
+        lot.firmware = self.firmware_version
+        saved = self.workfile.save(lot, book, appended=appended)
+        self.monitor.mark_recorded()
+        self._show_result(rec, sub=sub)
+        self.table.select_no(rec.no)
+        self._refresh_records()
+        if saved:
+            self.set_message(f"No.{rec.no} を記録しました（{rec.voltage_V:.4f} V　{rec.judge.label}）")
+        else:
+            self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.csv_path}）", error=True)
+        self._update_display(force=True)
+        self.last_latency_s = time.monotonic() - self._pressed_mono
+        if self.settings.sound:
+            sound.play(rec.judge.is_ok)
+
+    def _save_workfile(self, appended: bool = False) -> None:
+        if self.workfile is None or self.lot is None or self.book is None:
+            return
+        if not self.workfile.save(self.lot, self.book, appended=appended):
+            self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.csv_path}）", error=True)
+
+    # ================================================================ F-06 取り消し
+    def on_undo(self) -> None:
+        if self.collector is not None or self.book is None or not len(self.book):
+            return
+        if QApplication.activeModalWidget() is not None:
+            return
+        last = self.book.last
+        ans = self._ask(
+            f"No.{last.no}（{last.voltage_V:.4f} V）を取り消しますか？", [("yes", "はい"), ("no", "いいえ")], escape="no"
+        )
+        if ans != "yes":
+            return
+        self.book.undo_last()
+        self.table.model.removed_last()
+        if self.remeasure_no is not None and self.book.get(self.remeasure_no) is None:
+            self.remeasure_no = None
+        self.lot.revision += 1
+        self._save_workfile()
+        # 取り消した後は、同じバッテリをもう一度記録してよい（二重記録の確認を出さない）
+        self.monitor.detached_since_mark = True
+        self.table.select_no(self.book.last.no if self.book.last else None)
+        self._refresh_records()
+        self._show_result(None, main=f"No.{last.no} を取り消しました", sub=f"次は No.{self.book.next_no}")
+        if not (self.workfile and self.workfile.dirty):
+            self.set_message(f"No.{last.no} を取り消しました")
+        self._update_display(force=True)
+
+    # ================================================================ F-07 測り直し
+    def on_remeasure(self) -> None:
+        if self.collector is not None or self.book is None:
+            return
+        if self.remeasure_no is not None:
+            self.cancel_remeasure()
+            return
+        no = self.table.selected_no()
+        if no is None:
+            return
+        self.start_remeasure(no)
+
+    def start_remeasure(self, no: int) -> None:
+        if self.book is None or self.book.get(no) is None:
+            return
+        self.remeasure_no = no
+        self._show_result(None)
+        self.set_message(f"No.{no} を測り直します")
+        self._update_buttons()
+
+    def cancel_remeasure(self) -> None:
+        if self.remeasure_no is None or self.collector is not None:
+            return
+        no = self.remeasure_no
+        self.remeasure_no = None
+        self._show_result(None, main=f"No.{no} の測り直しをやめました")
+        self.set_message("")
+        self._update_buttons()
+
+    # ================================================================ F-02 ロット
+    def on_new_lot(self) -> None:
+        if self.collector is not None:
+            return
+        if self.lot is not None:
+            ans = self._ask(
+                f"現在のロット（{self.lot.lot_name}、{len(self.book)} 件）を終了して、新しいロットを始めますか？",
+                [("end", "終了して新しいロット"), ("keep", "途中のまま残す"), ("cancel", "キャンセル")],
+                escape="cancel",
+            )
+            if ans == "cancel":
+                return
+            if ans == "end" and not self.on_end_lot(confirm=self.lot.unexported and len(self.book) > 0):
+                return
+        s = self.settings
+        initial = LotInput(s.lot_name, s.operator, s.lower_V, s.upper_V, 1, "")
+        value = self._ask_lot(initial, editing=False)
+        if value is None:
+            return
+        self.start_lot(value)
+
+    def start_lot(self, value: LotInput) -> bool:
+        now = datetime.now().replace(microsecond=0)
+        try:
+            self.paths.lots_dir.mkdir(parents=True, exist_ok=True)
+            lot_id = new_lot_id(self.paths.lots_dir, now)
+            info = LotInfo(
+                lot_id=lot_id,
+                lot_name=value.lot_name,
+                lower_V=value.lower_V,
+                upper_V=value.upper_V,
+                start_no=value.start_no,
+                operator=value.operator,
+                memo=value.memo,
+                started_at=now.strftime(DATETIME_FMT),
+            )
+            book = RecordBook(value.start_no)
+            wf = WorkFile.create(self.paths.lots_dir, info, book)
+        except OSError:
+            log.warning("作業ファイルを作れません", exc_info=True)
+            msg = f"作業ファイルを作れません（{self.paths.lots_dir}）"
+            self.set_message(msg, error=True)
+            self._warn(msg)
+            return False
+        s = self.settings
+        s.lot_name, s.operator, s.lower_V, s.upper_V = value.lot_name, value.operator, value.lower_V, value.upper_V
+        s.save(self.paths.settings_file)
+        self._open_lot(info, book, wf)
+        self.set_message(f"ロット {info.lot_name} を始めました")
+        return True
+
+    def _open_lot(self, info: LotInfo, book: RecordBook, wf: WorkFile) -> None:
+        self.lot, self.book, self.workfile = info, book, wf
+        self.remeasure_no = None
+        self.monitor.detached_since_mark = True
+        self._show_lot()
+
+    def _close_lot(self) -> None:
+        self.lot = self.book = self.workfile = None
+        self.remeasure_no = None
+        self._show_lot()
+
+    def on_lot_settings(self) -> None:
+        if self.lot is None or self.collector is not None:
+            return
+        lot = self.lot
+        initial = LotInput(lot.lot_name, lot.operator, lot.lower_V, lot.upper_V, lot.start_no, lot.memo)
+        value = self._ask_lot(initial, editing=True)
+        if value is None:
+            return
+        self.apply_lot_settings(value)
+
+    def apply_lot_settings(self, value: LotInput) -> None:
+        lot = self.lot
+        limits_changed = (value.lower_V, value.upper_V) != (lot.lower_V, lot.upper_V)
+        lot.lot_name, lot.operator, lot.memo = value.lot_name, value.operator, value.memo
+        lot.lower_V, lot.upper_V = value.lower_V, value.upper_V
+        changed = self.book.rejudge(lot.lower_V, lot.upper_V) if limits_changed else 0
+        lot.revision += 1
+        self._save_workfile()
+        sel = self.table.selected_no()
+        self._show_lot()
+        self.table.select_no(sel)
+        msg = "ロット設定を変えました"
+        if limits_changed:
+            msg += f"（判定をやり直しました。変わった記録 {changed} 件）"
+        self.set_message(msg)
+
+    def on_end_lot(self, confirm: bool = True) -> bool:
+        """「ロット終了」。終了したら True。"""
+        if self.lot is None or self.collector is not None:
+            return False
+        if confirm:
+            if self.lot.unexported and len(self.book) > 0:
+                text = f"出力していない記録があります。ロット（{self.lot.lot_name}）を終了しますか？"
+            else:
+                text = f"ロット（{self.lot.lot_name}）を終了しますか？"
+            if self._ask(text, [("end", "終了する"), ("cancel", "やめる")], escape="cancel") != "end":
+                return False
+        name = self.lot.lot_name
+        if not finish_lot(self.workfile, self.lot):
+            self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.json_path}）", error=True)
+        self._close_lot()
+        self.set_message(f"ロット {name} を終了しました")
+        return True
+
+    # ================================================================ F-09 出力
+    def on_export(self) -> None:
+        if self.lot is None or not self.book or self.collector is not None:
+            return
+        folder = self._ask_export_folder()
+        if not folder:
+            return
+        lot = self.lot
+        cond = Conditions(
+            port=lot.port or self._device,
+            interval_ms=lot.interval_ms if lot.interval_ms is not None else self.effective_interval_ms(),
+            firmware=lot.firmware if lot.firmware is not None else self.firmware_version,
+        )
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            res = export_lot(Path(folder), lot, self.book.records, cond)
+        except ExportError as e:
+            QApplication.restoreOverrideCursor()
+            self.set_message(str(e), error=True)
+            self._warn(str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        lot.exported_revision = lot.revision
+        lot.last_export_dir = str(folder)
+        lot.last_export_base = res.base
+        if self.workfile:
+            self.workfile.save_info(lot)
+        self.settings.save_dir = str(folder)
+        self.settings.save(self.paths.settings_file)
+        self._saved_folder = Path(folder)
+        self.set_message(f"保存しました：{folder}（{res.base}.csv / .xlsx）")
+        self.open_folder_button.setVisible(True)
+        self.last_export = res
+        ans = self._ask("出力しました。ロットを終了しますか？", [("end", "終了する"), ("continue", "続ける")], escape="continue")
+        if ans == "end":
+            self.on_end_lot(confirm=False)
+            self.set_message(f"保存しました：{folder}（ロットを終了しました）")
+            self.open_folder_button.setVisible(True)
+
+    def _open_saved_folder(self) -> None:
+        if self._saved_folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._saved_folder)))
+
+    # ================================================================ F-08 再開
+    def check_resume(self) -> None:
+        """起動時：終了していないロットがあれば、続けるか聞く。"""
+        try:
+            removed = cleanup_finished(self.paths.lots_dir)
+            if removed:
+                log.warning("終了から 30 日を過ぎた作業ファイルを消しました: %s", ", ".join(removed))
+        except OSError:
+            log.warning("古い作業ファイルの整理に失敗", exc_info=True)
+        for entry in find_unfinished(self.paths.lots_dir):
+            try:
+                records, _dropped, _w = read_records(entry.csv_path, entry.info.start_no)
+            except (OSError, ValueError):
+                log.warning("作業ファイルを読めません: %s", entry.csv_path, exc_info=True)
+                continue
+            last = f"、最後は No.{records[-1].no}" if records else ""
+            ans = self._ask(
+                f"前回のロット（{entry.info.lot_name}、{len(records)} 件{last}）が途中です。続けますか？",
+                [("resume", "続ける"), ("new", "新しいロット"), ("later", "あとで")],
+                escape="later",
+            )
+            if ans == "resume":
+                self.resume_lot(entry)
+            elif ans == "new":
+                self.on_new_lot()
+            return
+
+    def resume_lot(self, entry) -> bool:
+        try:
+            state, wf = load_lot(entry)
+        except (OSError, ValueError):
+            log.warning("作業ファイルから再開できません: %s", entry.csv_path, exc_info=True)
+            msg = f"作業ファイルを読めません（{entry.csv_path}）"
+            self.set_message(msg, error=True)
+            self._warn(msg)
+            return False
+        self._open_lot(state.info, state.book, wf)
+        msg = f"ロット {state.info.lot_name} を再開しました（{len(state.book)} 件、次は No.{state.book.next_no}）"
+        notes = []
+        if state.dropped_no is not None:
+            notes.append(f"最後の 1 件（No.{state.dropped_no}）が壊れていたため除きました")
+        notes += state.warnings
+        if notes:
+            self.set_message("　".join(notes), error=True)
+            self._info(msg + "\n" + "\n".join(notes))
+        else:
+            self.set_message(msg)
+        return True
+
+    # ================================================================ 設定
+    def on_settings(self) -> None:
+        if self.collector is not None:
+            return
+        dlg = SettingsDialog(self, self.settings)
+        if dlg.exec() != SettingsDialog.Accepted:
+            return
+        dlg.apply_to(self.settings)
+        self.apply_settings()
+
+    def apply_settings(self) -> None:
+        self.monitor.threshold_V = self.settings.connect_threshold_V
+        self.monitor.stable_width_V = self.settings.stable_width_mV / 1000
+        self.settings.save(self.paths.settings_file)
+        self.set_message("設定を保存しました")
+        self._update_display(force=True)
+
+    # ================================================================ 終了
+    def closeEvent(self, event) -> None:  # noqa: N802
+        # 記録はそのつど作業ファイルに保存しているので、確認せずに閉じる（次回起動時に続けられる）
+        self._cancel_collect()
+        if self.reader is not None:
+            self.reader.stop()
+            self.reader = None
+        self.poll_timer.stop()
+        QApplication.instance().removeEventFilter(self)
+        self.settings.save(self.paths.settings_file)
+        event.accept()
