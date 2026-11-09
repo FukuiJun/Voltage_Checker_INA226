@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStatusBar,
     QTextEdit,
     QVBoxLayout,
@@ -52,7 +53,7 @@ from ..workfile import WorkFile, cleanup_finished, find_unfinished, finish_lot, 
 from .dialogs import LotDialog, LotInput, SettingsDialog
 from .plot_panel import DistributionPlot
 from .record_table import RecordTablePanel
-from .widgets import ElideLabel, FitLabel, divider, sub_label
+from .widgets import ElideLabel, FitLabel, NumberCard, divider, sub_label
 
 log = logging.getLogger(__name__)
 
@@ -243,7 +244,11 @@ class MainWindow(QMainWindow):
         panel.setObjectName("panel")
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(10)
+        lay.setSpacing(8)
+
+        # 0. いま記録する番号（いちばん目立つ所に大きく）
+        self.number_card = NumberCard()
+        lay.addWidget(self.number_card)
 
         # 1. 「電圧」見出しと接続状態
         row = QHBoxLayout()
@@ -270,12 +275,6 @@ class MainWindow(QMainWindow):
         bl.addWidget(unit, 0, Qt.AlignBottom)
         lay.addWidget(badge)
 
-        # 3. 次の番号
-        self.next_label = QLabel()
-        self.next_label.setFont(ui_font(28, bold=True))
-        self.next_label.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.next_label)
-
         # 4. 記録ボタン
         self.record_button = self._button("● 記録（Space）", "recordButton", self.on_record, 22)
         self.record_button.setFixedHeight(72)
@@ -295,16 +294,19 @@ class MainWindow(QMainWindow):
         self.result_sub.setWordWrap(True)
         rl.addWidget(self.result_main)
         rl.addWidget(self.result_sub)
-        self.result_box.setMinimumHeight(86)
+        self.result_box.setMinimumHeight(78)
         lay.addWidget(self.result_box)
 
         # 6. 取り消し・測り直し
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.undo_button = self._button("1 つ前を取り消す（Ctrl+Z）", "undoButton", self.on_undo, 13, bold=False)
+        self.undo_button = self._button("取り消す（Ctrl+Z）", "undoButton", self.on_undo, 13, bold=False)
         self.remeasure_button = self._button("この番号を測り直す", "remeasureButton", self.on_remeasure, 13, bold=False)
         for b in (self.undo_button, self.remeasure_button):
             b.setMinimumHeight(38)
+            # 文字の長さで左パネルの幅を広げない（左パネルは幅固定）
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            b.setMinimumWidth(0)
             row.addWidget(b, 1)
         lay.addLayout(row)
 
@@ -333,6 +335,7 @@ class MainWindow(QMainWindow):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFixedWidth(LEFT_PANEL_WIDTH)
         scroll.setFocusPolicy(Qt.NoFocus)
+        self.left_scroll = scroll
         return scroll
 
     def _build_status_bar(self) -> None:
@@ -404,8 +407,9 @@ class MainWindow(QMainWindow):
         selected = self.table.selected_no() is not None
         self.record_button.setEnabled(connected and has_lot and battery and not measuring)
         self.undo_button.setEnabled(has_lot and n > 0 and not measuring)
+        # 測り直しを始めるのは接続中だけ。やめるのはいつでもできる
         self.remeasure_button.setEnabled(
-            connected and has_lot and not measuring and (selected or self.remeasure_no is not None)
+            has_lot and not measuring and (self.remeasure_no is not None or (connected and selected))
         )
         self.export_button.setEnabled(has_lot and n > 0 and not measuring)
         self.new_lot_button.setEnabled(not measuring)
@@ -416,12 +420,22 @@ class MainWindow(QMainWindow):
         self.refresh_button.setEnabled(not connected and not measuring)
         self.connect_button.setEnabled(not measuring and (connected or bool(self.port_combo.currentData())))
         self.connect_button.setText("切断" if connected else "接続")
+        self._update_number()
         if self.remeasure_no is not None:
             self.record_button.setText(f"● No.{self.remeasure_no} を測り直す（Space）")
-            self.remeasure_button.setText("測り直しをやめる（Esc）")
+            self.remeasure_button.setText("測り直しをやめる")
         else:
             self.record_button.setText("● 記録（Space）")
             self.remeasure_button.setText("この番号を測り直す")
+
+    def _update_number(self) -> None:
+        book = self.book
+        if book is None:
+            self.number_card.set_none()
+        elif self.remeasure_no is not None:
+            self.number_card.set_remeasure(self.remeasure_no, book.next_no)
+        else:
+            self.number_card.set_next(book.next_no, len(book))
 
     def _update_display(self, force: bool = False) -> None:
         """電圧表示・接続状態・ステータス欄（200 ms ごと）。"""
@@ -487,7 +501,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_records(self) -> None:
         book = self.book
-        self.next_label.setText(f"次は No.{book.next_no}" if book else "次は ---")
+        self._update_number()
         self.plot.refresh(book)
         self.summary_label.setText(summary_text(compute_stats(book.records)) if book else "")
 

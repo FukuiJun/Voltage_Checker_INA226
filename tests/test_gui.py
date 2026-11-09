@@ -104,6 +104,7 @@ def test_initial_button_states(make_window, qapp):
     assert w.new_lot_button.isEnabled() and w.connect_button.isEnabled() and w.port_combo.isEnabled()
     assert w.connect_button.text() == "接続"
     assert w.lot_label.text() == "ロットなし"
+    assert w.number_card.number == "---" and w.number_card.property("mode") == "none"
 
 
 def test_ac01_connect_sends_interval_40(make_window, qapp):
@@ -183,7 +184,7 @@ def test_ac15_space_records_20_in_a_row(make_window, qapp, monkeypatch):
     assert w.asked == []  # 毎回バッテリを外しているので確認は出ない
     assert max(latencies) < 0.5, latencies
     assert w.table.model.rowCount() == 20 and w.table.selected_no() == 20  # 最新の行を選ぶ
-    assert w.next_label.text() == "次は No.21"
+    assert w.number_card.number == "21" and w.number_card.sub_label.text() == "記録済み 20 件"
     assert w.summary_label.text().startswith("件数 20 ／ OK ")
     # 作業ファイルにも 20 件
     from battery_checker.workfile import read_records
@@ -233,13 +234,17 @@ def test_undo_and_remeasure(make_window, qapp):
     w.answers = ["yes"]
     w.on_undo()
     assert w.asked[-1].startswith("No.3（") and w.asked[-1].endswith(" V）を取り消しますか？")
-    assert len(w.book) == 2 and w.next_label.text() == "次は No.3"
+    assert len(w.book) == 2 and w.number_card.number == "3"
     assert w.table.model.rowCount() == 2
     # 測り直し：No.1 を選んで「この番号を測り直す」→ 記録
     w.table.select_no(1)
     assert w.remeasure_button.isEnabled()
     w.on_remeasure()
     assert w.remeasure_no == 1 and w.result_main.text() == "No.1 を測り直します"
+    # 測り直し中は番号カードが「測り直す番号」に変わり、次の番号は変わらない
+    assert w.number_card.number == "1" and w.number_card.property("mode") == "remeasure"
+    assert w.number_card.caption_label.text() == "測り直す番号"
+    assert w.number_card.sub_label.text() == "次は No.3 のまま"
     assert record_and_wait(w, qapp) is False  # 件数は変わらない
     assert w.book.get(1).remeasured == 1 and len(w.book) == 2 and w.book.next_no == 3
     assert w.remeasure_no is None
@@ -294,7 +299,7 @@ def test_ac09_resume_in_new_window(make_window, qapp):
     w2.check_resume()
     assert w2.asked == ["前回のロット（LOT-B、3 件、最後は No.103）が途中です。続けますか？"]
     assert w2.lot.lot_name == "LOT-B" and len(w2.book) == 3 and w2.book.next_no == 104
-    assert w2.next_label.text() == "次は No.104" and w2.table.model.rowCount() == 3
+    assert w2.number_card.number == "104" and w2.table.model.rowCount() == 3
     assert w2.lot_label.text() == "LOT-B ／ 下限 3.600 V・上限 4.200 V"
     # 最終行が切れていたら、その 1 件を除いて再開し、メッセージを出す（AC-10）
     w2.close()
