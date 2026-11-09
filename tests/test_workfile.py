@@ -156,6 +156,6 @@ def test_header_mismatch_raises(tmp_path):
 
 def test_create_fails_when_folder_cannot_be_made(tmp_path):
     ro = tmp_path / "ro"
-    ro.write_text("ファイルなのでフォルダを作れない")
+    ro.write_text("ファイルなのでフォルダを作れない", encoding="utf-8")
     with pytest.raises(OSError):
         new_lot(ro / "lots")
