@@ -1,11 +1,19 @@
 # Windows でテストと exe ビルドを行い、フォルダ一式をアーティファクトとして残す。
-# v で始まるタグ（例：v1.0.0）を push したときは、zip を GitHub Releases に添付する。
+# 次のどちらかで、zip を GitHub Releases に添付する（Release が無ければ作る。あれば zip を差し替える）。
+#   - v で始まるタグ（例：v1.0.0）を push する（タグと __version__ が一致している必要がある）
+#   - Actions の画面で build-windows を手動実行し、release にチェックを入れる
+#     （タグ v<__version__> を、実行したブランチの最新コミットに作る）
 name: build-windows
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "v<__version__> の Release を作って（更新して）zip を添付する"
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -39,7 +47,7 @@ jobs:
           name: INA226_BatteryChecker-windows
           path: dist/INA226_BatteryChecker
 
-      # ---- ここからタグを push したときだけ ----
+      # ---- ここから Release を作るときだけ（タグの push、または手動実行で release を選んだとき） ----
       - name: Check tag matches version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -49,15 +57,18 @@ jobs:
             exit 1
           }
       - name: Attach zip to release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
-          gh release view $env:TAG *> $null
+          $tag = if ("${{ github.ref }}".StartsWith("refs/tags/v")) { "${{ github.ref_name }}" } else { "v$env:VERSION" }
+          gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:TAG --title "INA226_BatteryChecker $env:TAG" --generate-notes
+            # タグが無ければ、このコミットに作る
+            gh release create $tag --target "${{ github.sha }}" --title "INA226_BatteryChecker $tag" --generate-notes
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
-          gh release upload $env:TAG $env:ZIP --clobber
+          gh release upload $tag $env:ZIP --clobber
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "Release: $tag ($env:ZIP)" >> $env:GITHUB_STEP_SUMMARY

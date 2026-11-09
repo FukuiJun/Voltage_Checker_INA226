@@ -108,7 +108,9 @@ python -m pytest -q
 Windows で `build.bat` を実行すると、テスト → PyInstaller → zip まで行い、
 `dist\INA226_BatteryChecker\INA226_BatteryChecker.exe` と `INA226_BatteryChecker_v<版>.zip` ができます（フォルダ配布）。
 GitHub に push すると Actions（`build-windows`）が同じことを行い、exe 一式をアーティファクトに残します。
-`v0.1.0` のようなタグを push すると、zip を GitHub Releases に添付します（タグと `battery_checker/__init__.py` の `__version__` が一致している必要があります）。
+Release（zip の配布）は次のどちらかで作ります。すでに同じ版の Release があれば zip を差し替えます。
+- GitHub の Actions → build-windows →「Run workflow」で **release** にチェックを入れて実行（タグ `v<版>` を自動で作ります）
+- `v0.1.0` のようなタグを push（タグと `battery_checker/__init__.py` の `__version__` が一致している必要があります）
 
 ### 構成
 
