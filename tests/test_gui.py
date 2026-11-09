@@ -726,3 +726,63 @@ def test_continuous_mode_off_on_disconnect(make_window, qapp):
     w.disconnect_port()
     assert not w.continuous and not w.continuous_button.isChecked()
     assert not w.continuous_button.isEnabled()
+
+
+# ================================================================ 新しいロット：下限・上限のバー
+def _drag_handle(bar, which, to_v):
+    from PySide6.QtCore import QPoint
+
+    c = bar.handle_center(which).toPoint()
+    target = QPoint(int(round(bar._x_of(to_v))), c.y())
+    QTest.mousePress(bar, Qt.LeftButton, Qt.NoModifier, c)
+    for i in range(1, 6):
+        QTest.mouseMove(bar, QPoint(c.x() + (target.x() - c.x()) * i // 5, c.y()))
+    QTest.mouseRelease(bar, Qt.LeftButton, Qt.NoModifier, target)
+
+
+def test_lot_dialog_range_bar(qapp):
+    from battery_checker.gui.dialogs import LotDialog
+
+    d = LotDialog(None, LotInput("CLC", "105619", 3.6, 4.0, 1, ""))
+    d.resize(480, 460)
+    d.show()
+    qapp.processEvents()
+    bar = d.range_bar
+    assert bar.values() == (3.6, 4.0) and bar.visible_range() == (3.0, 4.5)
+    # 上のつまみをドラッグ → 上限の欄が変わる（0.01 V 刻み）
+    _drag_handle(bar, "hi", 4.3)
+    assert d.upper_edit.text() == "4.300" and d.lower_edit.text() == "3.600"
+    assert d.ok_button.isEnabled()
+    # 下のつまみ：上限より上には行けない
+    _drag_handle(bar, "lo", 4.5)
+    lo, hi = bar.values()
+    assert lo < hi and float(d.lower_edit.text()) < float(d.upper_edit.text())
+    # 矢印キーで 0.001 V、Shift で 0.01 V
+    d.lower_edit.setText("3.600")
+    _drag_handle(bar, "hi", 4.2)
+    bar.setFocus()
+    QTest.keyClick(bar, Qt.Key_Right)
+    assert d.upper_edit.text() == "4.201"
+    QTest.keyClick(bar, Qt.Key_Left, Qt.ShiftModifier)
+    assert d.upper_edit.text() == "4.191"
+    # 入力欄に書く → つまみが動き、範囲もそれに合わせる
+    d.lower_edit.setText("12.000")
+    d.upper_edit.setText("14.400")
+    assert bar.values() == (12.0, 14.4) and bar.visible_range() == (10.5, 16.0)
+    v = d.value()
+    assert (v.lower_V, v.upper_V) == (12.0, 14.4)
+
+
+def test_lot_dialog_range_bar_without_values(qapp):
+    from battery_checker.gui.dialogs import LotDialog
+
+    d = LotDialog(None, LotInput("CLC", "", 0.0, 0.0, 1, ""))
+    d.resize(480, 460)
+    d.show()
+    qapp.processEvents()
+    assert d.range_bar.visible_range() == (0.0, 5.0)
+    assert d.lower_edit.text() == "" and not d.ok_button.isEnabled()
+    # つまみを動かすと、下限・上限の両方の欄が入る
+    _drag_handle(d.range_bar, "lo", 3.5)
+    assert abs(float(d.lower_edit.text()) - 3.5) <= 0.02 and d.upper_edit.text() == "4.200"  # 0〜5 V では 1 px ≒ 17 mV
+    assert d.ok_button.isEnabled()

@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -24,8 +25,10 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSpinBox,
     QVBoxLayout,
+    QWidget,
 )
 
+from ..colors import COLORS
 from ..settings import Settings
 from ..theme import mono_font, ui_font
 from .widgets import sub_label
@@ -80,6 +83,171 @@ def _set_invalid(w, invalid: bool) -> None:
         w.style().polish(w)
 
 
+class LimitRangeBar(QWidget):
+    """下限・上限を 1 本のバーの 2 つのつまみで調整する（F-02）。
+
+    - 左のつまみ＝下限、右のつまみ＝上限。つまみの間（OK の範囲）は緑、外側（NG）は薄い赤
+    - ドラッグは 0.01 V 刻み。矢印キーで最後に触ったつまみを 0.001 V（Shift で 0.01 V）ずつ動かす
+    - バーの範囲は下限・上限の前後 0.5 V 以上（0.5 V 単位。例 3.600〜4.200 V → 3.0〜5.0 V）。
+      つまみを端まで動かして離すと、範囲を広げる（さらに先へ動かせる）。値が無いときは 0〜5 V
+    - 下限は上限より 0.001 V 以上小さく保つ
+    """
+
+    valuesChanged = Signal(float, float)
+
+    DRAG_STEP_V = 0.01
+    KEY_STEP_V = 0.001
+    MIN_GAP_V = 0.001
+    DEFAULT_RANGE = (0.0, 5.0)
+    PAD_V = 0.5
+    MARGIN_PX = 14  # つまみが端で切れないよう、バーの両端に空ける幅
+    HANDLE_R = 10
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._lo = 3.0
+        self._hi = 4.2
+        self._vmin, self._vmax = self.DEFAULT_RANGE
+        self._has_values = False  # 下限・上限が入っていない間は、つまみを薄く描く
+        self._drag: str | None = None
+        self._active = "lo"
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setMinimumHeight(54)
+        self.setToolTip("つまみをドラッグして下限・上限を変えます（矢印キーで 0.001 V、Shift＋矢印で 0.01 V）")
+
+    # ---- 値
+    def values(self) -> tuple[float, float]:
+        return self._lo, self._hi
+
+    def set_values(self, lo: float, hi: float) -> None:
+        """入力欄から値を受け取る（valuesChanged は出さない）。"""
+        self._lo, self._hi = round(lo, 3), round(hi, 3)
+        self._has_values = True
+        self._fit_range()
+        self.update()
+
+    def visible_range(self) -> tuple[float, float]:
+        return self._vmin, self._vmax
+
+    def _fit_range(self) -> None:
+        """下限・上限の前後に余白を取った範囲（0.5 V 単位）にする。"""
+        pad = max(self.PAD_V, (self._hi - self._lo) * 0.5)
+        self._vmin = max(0.0, math.floor((self._lo - pad) * 2) / 2)
+        self._vmax = min(MAX_VOLTAGE_V, math.ceil((self._hi + pad) * 2) / 2)
+
+    def _set_from_user(self, which: str, v: float) -> None:
+        v = round(min(max(v, 0.0), MAX_VOLTAGE_V), 3)
+        if which == "lo":
+            self._lo = min(v, round(self._hi - self.MIN_GAP_V, 3))
+        else:
+            self._hi = max(v, round(self._lo + self.MIN_GAP_V, 3))
+        self._has_values = True
+        self._active = which
+        self.update()
+        self.valuesChanged.emit(self._lo, self._hi)
+
+    # ---- 座標
+    def _track(self) -> QRectF:
+        r = self.contentsRect()
+        return QRectF(r.left() + self.MARGIN_PX, r.top() + 14, r.width() - 2 * self.MARGIN_PX, 8)
+
+    def _x_of(self, v: float) -> float:
+        t = self._track()
+        return t.left() + t.width() * (v - self._vmin) / (self._vmax - self._vmin)
+
+    def _v_of(self, x: float) -> float:
+        t = self._track()
+        v = self._vmin + (x - t.left()) / max(t.width(), 1.0) * (self._vmax - self._vmin)
+        v = min(max(v, self._vmin), self._vmax)
+        return round(round(v / self.DRAG_STEP_V) * self.DRAG_STEP_V, 3)
+
+    def handle_center(self, which: str) -> QPointF:
+        t = self._track()
+        return QPointF(self._x_of(self._lo if which == "lo" else self._hi), t.center().y())
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(320, 54)
+
+    # ---- 描画
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        t = self._track()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(COLORS["ng_bg"]).lighter(185))  # 外側（NG）
+        p.drawRoundedRect(t, 4, 4)
+        x_lo, x_hi = self._x_of(self._lo), self._x_of(self._hi)
+        if self._has_values:
+            p.setBrush(QColor(COLORS["ok_bg"]))  # 間（OK）
+            p.drawRect(QRectF(x_lo, t.top(), max(x_hi - x_lo, 1.0), t.height()))
+        # 目盛り（範囲に合わせて 0.5 / 1 / 5 V ごと）
+        p.setFont(mono_font(11))
+        p.setPen(QColor(COLORS["text_sub"]))
+        span = self._vmax - self._vmin
+        step = 0.5 if span <= 3 else 1.0 if span <= 10 else 5.0
+        fm = QFontMetrics(p.font())
+        ticks = []
+        v = math.ceil(self._vmin / step) * step
+        while v <= self._vmax + 1e-9:
+            ticks.append(round(v, 3))
+            v += step
+        for i, v in enumerate(ticks):
+            x = self._x_of(v)
+            p.drawLine(QPointF(x, t.bottom() + 2), QPointF(x, t.bottom() + 6))
+            label = f"{v:g}" + (" V" if i == len(ticks) - 1 else "")
+            p.drawText(QPointF(x - fm.horizontalAdvance(label) / 2, t.bottom() + 6 + fm.ascent()), label)
+        # つまみ
+        for which in ("lo", "hi"):
+            c = self.handle_center(which)
+            fill = QColor(COLORS["record_bg"]) if self._has_values else QColor(COLORS["readonly_bg"])
+            ring = QColor(COLORS["text"]) if (self.hasFocus() and which == self._active) else QColor(COLORS["input_border"])
+            p.setPen(QPen(ring, 2))
+            p.setBrush(fill)
+            p.drawEllipse(c, self.HANDLE_R, self.HANDLE_R)
+        p.end()
+
+    # ---- 操作
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.LeftButton:
+            return
+        x = event.position().x()
+        d_lo = abs(x - self._x_of(self._lo))
+        d_hi = abs(x - self._x_of(self._hi))
+        if d_lo == d_hi:  # 重なっているときは、押した側に動かせる方
+            which = "lo" if x < self._x_of(self._lo) else "hi"
+        else:
+            which = "lo" if d_lo < d_hi else "hi"
+        self._drag = which
+        self.setFocus()
+        self._set_from_user(which, self._v_of(x))
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag:
+            self._set_from_user(self._drag, self._v_of(event.position().x()))
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._drag and self._has_values:
+            # 端まで動かしていたら、範囲を広げてさらに先へ動かせるようにする
+            edge = (self._vmax - self._vmin) * 0.03
+            if self._lo <= self._vmin + edge or self._hi >= self._vmax - edge:
+                self._fit_range()
+                self.update()
+        self._drag = None
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        step = self.DRAG_STEP_V if event.modifiers() & Qt.ShiftModifier else self.KEY_STEP_V
+        if event.key() in (Qt.Key_Left, Qt.Key_Down):
+            self._set_from_user(self._active, (self._lo if self._active == "lo" else self._hi) - step)
+        elif event.key() in (Qt.Key_Right, Qt.Key_Up):
+            self._set_from_user(self._active, (self._lo if self._active == "lo" else self._hi) + step)
+        else:
+            super().keyPressEvent(event)
+            return
+        if not (self._vmin <= self._lo and self._hi <= self._vmax):
+            self._fit_range()
+            self.update()
+
+
 class LotDialog(QDialog):
     """新しいロット（「開始」）と、ロット設定（「変更」）の入力。
 
@@ -116,6 +284,7 @@ class LotDialog(QDialog):
             w.setPlaceholderText("例 3.600")
             w.setMaxLength(6)
             _latin_only(w)
+        self.range_bar = LimitRangeBar()
         self.start_spin = QSpinBox()
         self.start_spin.setRange(1, 9_999_999)
         self.start_spin.setValue(initial.start_no)
@@ -132,11 +301,13 @@ class LotDialog(QDialog):
             ("測定者（社員番号）", self.operator_edit),
             ("下限 [V]（必須）", self.lower_edit),
             ("上限 [V]（必須）", self.upper_edit),
+            ("", self.range_bar),
             ("開始番号", self.start_spin),
             ("メモ", self.memo_edit),
         )
         for r, (text, w) in enumerate(rows):
-            grid.addWidget(sub_label(text), r, 0, Qt.AlignTop if w is self.memo_edit else Qt.AlignVCenter)
+            if text:
+                grid.addWidget(sub_label(text), r, 0, Qt.AlignTop if w is self.memo_edit else Qt.AlignVCenter)
             grid.addWidget(w, r, 1)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
@@ -158,7 +329,30 @@ class LotDialog(QDialog):
 
         for w in (self.name_edit, self.operator_edit, self.lower_edit, self.upper_edit):
             w.textChanged.connect(self._validate)
+        # バーと入力欄を連動させる
+        self.range_bar.valuesChanged.connect(self._on_bar_moved)
+        for w in (self.lower_edit, self.upper_edit):
+            w.textChanged.connect(self._on_limit_typed)
+        self._on_limit_typed()
         self._validate()
+
+    def _on_bar_moved(self, lo: float, hi: float) -> None:
+        """バーを動かした → 入力欄を書き換える（入力欄からバーへは戻さない）。"""
+        self._syncing = True
+        try:
+            self.lower_edit.setText(f"{lo:.3f}")
+            self.upper_edit.setText(f"{hi:.3f}")
+        finally:
+            self._syncing = False
+
+    def _on_limit_typed(self, *_args) -> None:
+        """入力欄を書き換えた → 正しい値ならバーのつまみを動かす。"""
+        if getattr(self, "_syncing", False):
+            return
+        lo = parse_limit(self.lower_edit.text())
+        hi = parse_limit(self.upper_edit.text())
+        if lo is not None and hi is not None and lo < hi:
+            self.range_bar.set_values(lo, hi)
 
     def _validate(self) -> bool:
         name_ok = bool(self.name_edit.text().strip())
