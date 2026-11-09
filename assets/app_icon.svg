@@ -1,27 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-<title>INA226_Monitor</title>
-<rect x="88" y="112" width="336" height="352" rx="72" fill="#FCF8F3" stroke="#27221F" stroke-width="14"/>
-<rect x="136" y="36" width="240" height="104" rx="22" fill="#D57835" stroke="#27221F" stroke-width="14"/>
-<circle cx="166" cy="68" r="11" fill="#9A4F1C"/>
-<circle cx="226" cy="68" r="11" fill="#9A4F1C"/>
-<circle cx="286" cy="68" r="11" fill="#9A4F1C"/>
-<circle cx="346" cy="68" r="11" fill="#9A4F1C"/>
-<rect x="148" y="98" width="36" height="22" rx="6" fill="#9A4F1C"/>
-<rect x="208" y="98" width="36" height="22" rx="6" fill="#9A4F1C"/>
-<rect x="268" y="98" width="36" height="22" rx="6" fill="#9A4F1C"/>
-<rect x="328" y="98" width="36" height="22" rx="6" fill="#9A4F1C"/>
-<rect x="132" y="172" width="56" height="48" rx="8" fill="#9D2933"/>
-<rect x="196" y="172" width="56" height="48" rx="8" fill="#27221F"/>
-<rect x="260" y="172" width="56" height="48" rx="8" fill="#27221F"/>
-<rect x="324" y="172" width="56" height="48" rx="8" fill="#9D2933"/>
-<path d="M146 196 H174 M160 182 V210" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"/>
-<path d="M210 196 H238" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"/>
-<path d="M274 196 H302" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"/>
-<path d="M338 196 H366 M352 182 V210" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"/>
-<rect x="132" y="248" width="248" height="112" rx="26" fill="#D57835"/>
-<polyline points="158,306 204,306 222,268 246,344 266,290 284,306 354,306" fill="none" stroke="#FCF8F3" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
-<circle cx="140" cy="410" r="20" fill="#E2D3C2"/>
-<circle cx="372" cy="410" r="20" fill="#E2D3C2"/>
-<rect x="196" y="394" width="120" height="86" rx="14" fill="#913225" stroke="#27221F" stroke-width="12"/>
-<rect x="222" y="414" width="68" height="28" rx="5" fill="#5E1F18"/>
+<title>INA226_BatteryChecker</title>
+<g transform="translate(-86.6 -62.6) scale(1.232)">
+<g transform="translate(20 40) scale(0.75 0.85)">
+<rect x="88" y="112" width="336" height="352" rx="72" fill="#FCF8F3" stroke="#27221F" stroke-width="14"></rect>
+<rect x="136" y="36" width="240" height="104" rx="22" fill="#D57835" stroke="#27221F" stroke-width="14"></rect>
+<circle cx="166" cy="68" r="11" fill="#9A4F1C"></circle>
+<circle cx="226" cy="68" r="11" fill="#9A4F1C"></circle>
+<circle cx="286" cy="68" r="11" fill="#9A4F1C"></circle>
+<circle cx="346" cy="68" r="11" fill="#9A4F1C"></circle>
+<rect x="148" y="98" width="36" height="22" rx="6" fill="#9A4F1C"></rect>
+<rect x="208" y="98" width="36" height="22" rx="6" fill="#9A4F1C"></rect>
+<rect x="268" y="98" width="36" height="22" rx="6" fill="#9A4F1C"></rect>
+<rect x="328" y="98" width="36" height="22" rx="6" fill="#9A4F1C"></rect>
+<rect x="132" y="172" width="56" height="48" rx="8" fill="#9D2933"></rect>
+<rect x="196" y="172" width="56" height="48" rx="8" fill="#27221F"></rect>
+<rect x="260" y="172" width="56" height="48" rx="8" fill="#27221F"></rect>
+<rect x="324" y="172" width="56" height="48" rx="8" fill="#9D2933"></rect>
+<path d="M146 196 H174 M160 182 V210" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"></path>
+<path d="M210 196 H238" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"></path>
+<path d="M274 196 H302" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"></path>
+<path d="M338 196 H366 M352 182 V210" stroke="#FCF8F3" stroke-width="8" stroke-linecap="round" fill="none"></path>
+<rect x="132" y="248" width="248" height="112" rx="26" fill="#D57835"></rect>
+<text x="256" y="324" text-anchor="middle" font-family="Consolas, 'DejaVu Sans Mono', monospace" font-size="58" font-weight="700" fill="#FCF8F3">INA226</text>
+<circle cx="140" cy="410" r="20" fill="#E2D3C2"></circle>
+<circle cx="372" cy="410" r="20" fill="#E2D3C2"></circle>
+<rect x="196" y="394" width="120" height="86" rx="14" fill="#913225" stroke="#27221F" stroke-width="12"></rect>
+<rect x="222" y="414" width="68" height="28" rx="5" fill="#5E1F18"></rect>
+</g>
+<g transform="translate(417 259.3) scale(0.947) translate(-404 -232.5)">
+<rect x="376" y="68" width="56" height="34" rx="8" fill="#3C3C3C"></rect>
+<rect x="388" y="77" width="32" height="12" rx="3" fill="#D9D9D9"></rect>
+<rect x="348" y="94" width="112" height="296" rx="24" fill="#6E6E6E" stroke="#3C3C3C" stroke-width="14"></rect>
+<path d="M355 186 V118 Q355 101 372 101 H436 Q453 101 453 118 V186 Z" fill="#8CC63F"></path>
+<circle cx="404" cy="144" r="30" fill="#FFFFFF" stroke="#3C3C3C" stroke-width="8"></circle>
+<path d="M388 144 H420 M404 128 V160" stroke="#3C3C3C" stroke-width="9" stroke-linecap="round"></path>
+<circle cx="404" cy="340" r="30" fill="#FFFFFF" stroke="#3C3C3C" stroke-width="8"></circle>
+<path d="M388 340 H420" stroke="#3C3C3C" stroke-width="9" stroke-linecap="round"></path>
+</g>
+</g>
 </svg>

@@ -133,6 +133,15 @@ Release（zip の配布）は次のどちらかで作ります。すでに同じ
 - GitHub の Actions → build-windows →「Run workflow」で **release** にチェックを入れて実行（タグ `v<版>` を自動で作ります）
 - `v0.1.0` のようなタグを push（タグと `battery_checker/__init__.py` の `__version__` が一致している必要があります）
 
+### アプリアイコン
+
+INA226 本体（INA226_Monitor のアイコンと同じ形）と電池を並べた、このアプリ専用のアイコンです（仕様 Q-10 の差し替え）。
+元の絵は `assets/app_icon.svg`（背景は透過）。変えたときは次を実行すると、PNG（256・512 px）と ICO（16〜256 px の 10 サイズ）を作り直します。
+
+```bash
+python tools/build_icons.py
+```
+
 ### 構成
 
 | モジュール | 役割 | 出どころ |
