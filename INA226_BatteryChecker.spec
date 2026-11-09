@@ -9,6 +9,7 @@ a = Analysis(
         ("assets/app_icon.ico", "assets"),
         ("assets/app_icon_256.png", "assets"),
         ("assets/app_icon_512.png", "assets"),
+        ("assets/sound_ok.wav", "assets"),
         ("battery_checker/style/app.qss", "battery_checker/style"),
         ("battery_checker/style/arrow_down.png", "battery_checker/style"),
         ("battery_checker/style/arrow_down_disabled.png", "battery_checker/style"),

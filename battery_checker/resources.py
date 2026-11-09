@@ -16,3 +16,5 @@ APP_ICON = "assets/app_icon.ico"
 # .ico を読めなかったときの予備（PNG は Qt のプラグインなしで読める）
 APP_ICON_PNGS = ("assets/app_icon_256.png", "assets/app_icon_512.png")
 STYLE_QSS = "battery_checker/style/app.qss"
+# 判定 OK のときの音（WAV。Windows の PlaySound で鳴らす）
+SOUND_OK = "assets/sound_ok.wav"
