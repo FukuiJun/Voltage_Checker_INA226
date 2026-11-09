@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QFontMetrics, QPainter
+from PySide6.QtCore import QSize
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
+from ..colors import COLORS
 from ..theme import mono_font, ui_font
 
 
@@ -81,6 +83,74 @@ class ElideLabel(QLabel):
         painter.drawText(rect, int(Qt.AlignLeft | Qt.AlignVCenter), text)
 
 
+class NumberValue(QWidget):
+    """「No.」と番号を 1 つの部品として描く（右寄せ・同じベースライン・間はいつも少しだけ）。
+
+    番号が長くて入りきらないときは、番号の文字を小さくする（「No.」の大きさは変えない）。
+    """
+
+    GAP_PX = 6
+    PREFIX = "No."
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._prefix_font = ui_font(22, bold=True)
+        self._number_font = mono_font(64, bold=True)
+        self._min_px = 28
+        self._text = "---"
+        self._prefix_color = QColor(COLORS["limit_line"])
+        self._number_color = QColor(COLORS["header_text"])
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+    def text(self) -> str:
+        return self._text
+
+    def set_value(self, text: str, prefix_color: str, number_color: str) -> None:
+        self._text = text
+        self._prefix_color = QColor(prefix_color)
+        self._number_color = QColor(number_color)
+        self.updateGeometry()
+        self.update()
+
+    def _fonts_for(self, width: int) -> tuple[QFont, QFont]:
+        """幅に入るよう番号のフォントを縮める。"""
+        pf = QFont(self._prefix_font)
+        nf = QFont(self._number_font)
+        prefix_w = QFontMetrics(pf).horizontalAdvance(self.PREFIX)
+        px = nf.pixelSize()
+        while px > self._min_px and prefix_w + self.GAP_PX + QFontMetrics(nf).horizontalAdvance(self._text) > width:
+            px -= 1
+            nf.setPixelSize(px)
+        return pf, nf
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        pfm, nfm = QFontMetrics(self._prefix_font), QFontMetrics(self._number_font)
+        w = pfm.horizontalAdvance(self.PREFIX) + self.GAP_PX + nfm.horizontalAdvance(self._text)
+        return QSize(w, nfm.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(QFontMetrics(self._prefix_font).horizontalAdvance(self.PREFIX) + 40, 40)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        rect = self.contentsRect()
+        pf, nf = self._fonts_for(rect.width())
+        pfm, nfm = QFontMetrics(pf), QFontMetrics(nf)
+        prefix_w = pfm.horizontalAdvance(self.PREFIX)
+        number_w = nfm.horizontalAdvance(self._text)
+        x = rect.right() + 1 - (prefix_w + self.GAP_PX + number_w)  # 右寄せ
+        # 番号の文字を縦の中央に置き、「No.」は番号と同じベースラインにそろえる
+        baseline = rect.top() + (rect.height() + nfm.ascent() - nfm.descent()) // 2
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        painter.setFont(pf)
+        painter.setPen(self._prefix_color)
+        painter.drawText(x, baseline, self.PREFIX)
+        painter.setFont(nf)
+        painter.setPen(self._number_color)
+        painter.drawText(x + prefix_w + self.GAP_PX, baseline, self._text)
+        painter.end()
+
+
 class NumberCard(QFrame):
     """いま記録する番号を大きく出すカード（7 章 3.）。
 
@@ -113,20 +183,20 @@ class NumberCard(QFrame):
         left.addWidget(self.sub_label)
         left.addStretch(1)
         lay.addLayout(left, 1)
-        self.prefix_label = QLabel("No.")
-        self.prefix_label.setObjectName("numberPrefix")
-        self.prefix_label.setFont(ui_font(20, bold=True))
-        lay.addWidget(self.prefix_label, 0, Qt.AlignBottom)
-        self.number_label = FitLabel(mono_font(64, bold=True), min_px=28)
-        self.number_label.setObjectName("numberValue")
-        self.number_label.setMinimumWidth(120)
-        self.number_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        lay.addWidget(self.number_label, 0)
+        self.number_value = NumberValue()
+        # 左の「次に記録する番号」を隠さないよう、番号の欄は 180 px まで（長い番号は文字が小さくなる）
+        self.number_value.setMaximumWidth(180)
+        lay.addWidget(self.number_value, 0)
         self.setFixedHeight(96)
 
     def _set(self, mode: str, caption: str, number: str, sub: str) -> None:
         self.caption_label.setText(caption)
-        self.number_label.setText(number)
+        prefix, value = {
+            "next": (COLORS["limit_line"], COLORS["header_text"]),
+            "remeasure": (COLORS["header_text"], COLORS["header_text"]),
+            "none": (COLORS["text_sub"], COLORS["text_sub"]),
+        }[mode]
+        self.number_value.set_value(number, prefix, value)
         self.sub_label.setText(sub)
         if self.property("mode") != mode:
             self.setProperty("mode", mode)
@@ -145,4 +215,4 @@ class NumberCard(QFrame):
 
     @property
     def number(self) -> str:
-        return self.number_label.text()
+        return self.number_value.text()

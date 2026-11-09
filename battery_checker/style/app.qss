@@ -427,9 +427,7 @@ QFrame#numberCard[mode="none"] {
     border-left: 6px solid ${panel_border};
 }
 QFrame#panel QFrame#numberCard QLabel { color: ${header_text}; }
-QFrame#panel QFrame#numberCard QLabel#numberPrefix { color: ${limit_line}; }
 QFrame#panel QFrame#numberCard QLabel#numberSub { color: ${limit_line}; }
-QFrame#panel QFrame#numberCard[mode="remeasure"] QLabel#numberPrefix,
 QFrame#panel QFrame#numberCard[mode="remeasure"] QLabel#numberSub { color: ${header_text}; }
 QFrame#panel QFrame#numberCard[mode="none"] QLabel { color: ${text_sub}; }
 
