@@ -125,6 +125,8 @@ class MainWindow(QMainWindow):
         self.collector: SampleCollector | None = None
         self._pressed_mono = 0.0
         self.last_latency_s: float | None = None  # 記録ボタンから結果表示まで（AC-15 の確認用）
+        self.last_collect_s: float | None = None  # そのうち 5 個を集めるのにかかった時間
+        self.last_save_s: float | None = None  # そのうち作業ファイルの保存にかかった時間
         self.remeasure_no: int | None = None
         # ロット
         self.lot: LotInfo | None = None
@@ -776,7 +778,10 @@ class MainWindow(QMainWindow):
         lot.port = self._device
         lot.interval_ms = self.effective_interval_ms()
         lot.firmware = self.firmware_version
+        self.last_collect_s = time.monotonic() - self._pressed_mono
+        t_save = time.monotonic()
         saved = self.workfile.save(lot, book, appended=appended)
+        self.last_save_s = time.monotonic() - t_save
         self.monitor.mark_recorded()
         self._show_result(rec, sub=sub)
         self.table.select_no(rec.no)
