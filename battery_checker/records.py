@@ -126,7 +126,7 @@ class LotInfo:
     lower_V: float
     upper_V: float
     start_no: int = 1
-    operator: str = ""
+    operator: str = ""  # 測定者の社員番号
     memo: str = ""
     started_at: str = ""  # YYYY-MM-DD HH:MM:SS
     finished: bool = False

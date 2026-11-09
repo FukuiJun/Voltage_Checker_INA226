@@ -501,7 +501,7 @@ class MainWindow(QMainWindow):
         else:
             self.lot_label.setText(f"{lot.lot_name} ／ {lot.limits_text()}")
             self.limits_label.setText(f"{lot.lower_V:.3f} 〜 {lot.upper_V:.3f} V")
-            who = f"測定者 {lot.operator}　" if lot.operator else ""
+            who = f"測定者（社員番号）{lot.operator}　" if lot.operator else ""
             self.lot_detail_label.setText(f"{who}開始 {lot.started_at}")
             self.table.model.set_book(book)
             self.plot.set_limits(lot.lower_V, lot.upper_V)

@@ -19,7 +19,7 @@ class Settings:
     last_port: str = ""
     # ロットの前回値（F-02）
     lot_name: str = ""
-    operator: str = ""
+    operator: str = ""  # 測定者の社員番号
     lower_V: float = 0.0  # 0 / 0 は「前回値なし」（Q-01：既定値は持たない）
     upper_V: float = 0.0
     save_dir: str = ""  # 出力先フォルダ（F-09）

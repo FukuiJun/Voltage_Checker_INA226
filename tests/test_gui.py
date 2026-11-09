@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit  # noqa: E402
 from battery_checker.gui.dialogs import LotInput  # noqa: E402
 from battery_checker.paths import AppPaths  # noqa: E402
 
-LOT = LotInput("LOT-A12", "福井", 3.6, 4.2, 1, "")
+LOT = LotInput("LOT-A12", "123456", 3.6, 4.2, 1, "")
 
 
 @pytest.fixture(scope="module")
@@ -289,7 +289,7 @@ def test_ac09_resume_in_new_window(make_window, qapp):
     w = make_window(speed=5.0)
     w.settings.confirm_duplicate = False
     connect(w, qapp, "MOCK3")
-    w.start_lot(LotInput("LOT-B", "福井", 3.6, 4.2, 101, "メモ"))
+    w.start_lot(LotInput("LOT-B", "123456", 3.6, 4.2, 101, "メモ"))
     assert wait_stable_new_battery(w, qapp)
     for _ in range(3):
         assert record_and_wait(w, qapp)
@@ -355,7 +355,7 @@ def test_lot_settings_rejudges(make_window, qapp):
     assert wait_stable_new_battery(w, qapp)
     assert record_and_wait(w, qapp)
     v = w.book.get(1).voltage_V
-    w.apply_lot_settings(LotInput("LOT-A12", "福井", round(v + 0.1, 3), round(v + 0.2, 3), 1, ""))
+    w.apply_lot_settings(LotInput("LOT-A12", "123456", round(v + 0.1, 3), round(v + 0.2, 3), 1, ""))
     assert w.book.get(1).judge.value == "NG_LOW"
     assert "判定をやり直しました" in w.msg_label.text()
 
@@ -419,7 +419,7 @@ def test_lot_dialog_validation(qapp):
     assert d.ok_button.isEnabled() and not d.lower_edit.property("invalid")
     v = d.value()
     assert (v.lot_name, v.lower_V, v.upper_V, v.start_no) == ("LOT-A12", 3.6, 4.2, 1)
-    assert d.name_edit.maxLength() == 30 and d.operator_edit.maxLength() == 30
+    assert d.name_edit.maxLength() == 30 and d.operator_edit.maxLength() == 20
 
 
 # ================================================================ グラフの線をドラッグして上下限を変える
@@ -535,3 +535,25 @@ def test_number_inputs_are_not_collapsed(qapp):
     assert s.threshold_spin.value() == pytest.approx(0.8)
     s.close()
     d.close()
+
+
+def test_operator_is_employee_id(qapp):
+    """測定者は名前ではなく社員番号（半角英数字・ハイフン）。全角は半角に直す。空欄は可。"""
+    from battery_checker.gui.dialogs import LotDialog, is_valid_employee_id, normalize_employee_id
+
+    assert normalize_employee_id(" ０１２３４５ ") == "012345"
+    assert normalize_employee_id("Ａ１２－３４") == "A12-34"
+    for ok in ("", "123456", "A12345", "12-345"):
+        assert is_valid_employee_id(ok), ok
+    for ng in ("福井", "福井 123", "12 34", "-123", "1" * 21, "12_34"):
+        assert not is_valid_employee_id(ng), ng
+
+    d = LotDialog(None, LotInput("LOT-A12", "福井", 3.6, 4.2, 1, ""))  # 前回値が名前のまま
+    assert not d.ok_button.isEnabled() and d.operator_edit.property("invalid")
+    assert "社員番号" in d.error_label.text()
+    d.operator_edit.setText("０１２３４５")
+    assert d.ok_button.isEnabled() and not d.operator_edit.property("invalid")
+    assert d.value().operator == "012345"
+    d.operator_edit.setText("")
+    assert d.ok_button.isEnabled() and d.value().operator == ""
+    assert not d.operator_edit.testAttribute(Qt.WA_InputMethodEnabled)  # 日本語入力はオフ

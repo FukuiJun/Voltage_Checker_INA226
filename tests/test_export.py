@@ -26,7 +26,7 @@ COND = Conditions(port="COM7", interval_ms=40, firmware=2)
 
 
 def make_lot(n, seed=1, start_no=1, name="LOT-A12"):
-    info = LotInfo("20261106_143000", name, 3.6, 4.2, start_no, "福井", "メモ1\nメモ2", started_at="2026-11-06 14:30:00")
+    info = LotInfo("20261106_143000", name, 3.6, 4.2, start_no, "123456", "メモ1\nメモ2", started_at="2026-11-06 14:30:00")
     book = RecordBook(start_no)
     rng = random.Random(seed)
     for _ in range(n):
@@ -88,7 +88,7 @@ def test_ac12_xlsx_contents(tmp_path):
     judges = [r[2] for r in rows]
     summary = {ws_row[0].value: ws_row[1].value for ws_row in wb[SHEET_SUMMARY].iter_rows(min_row=2, max_col=2)
                if ws_row[0].value}
-    assert summary["ロット名"] == "LOT-A12" and summary["測定者"] == "福井"
+    assert summary["ロット名"] == "LOT-A12" and summary["測定者（社員番号）"] == "123456"
     assert summary["件数"] == len(rows)
     assert summary["OK 数"] == judges.count("OK")
     assert summary["NG 数"] == len(rows) - judges.count("OK")

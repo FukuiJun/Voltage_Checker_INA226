@@ -22,7 +22,7 @@ T = datetime(2026, 11, 6, 14, 30, 0)
 
 def new_lot(tmp_path, start_no=1, name="LOT-A12"):
     lot_id = new_lot_id(tmp_path, T)
-    info = LotInfo(lot_id, name, 3.6, 4.2, start_no, "福井", "メモ", started_at="2026-11-06 14:30:00")
+    info = LotInfo(lot_id, name, 3.6, 4.2, start_no, "123456", "メモ", started_at="2026-11-06 14:30:00")
     book = RecordBook(start_no)
     return info, book, WorkFile.create(tmp_path, info, book)
 

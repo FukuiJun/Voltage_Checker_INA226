@@ -165,7 +165,7 @@ def build_workbook(info: LotInfo, records: Sequence[Record], cond: Conditions):
 
     rows = [
         ("ロット名", info.lot_name),
-        ("測定者", info.operator),
+        ("測定者（社員番号）", info.operator),
         ("開始日時", info.started_at),
         ("終了日時", end_text),
         ("下限 [V]", info.lower_V),

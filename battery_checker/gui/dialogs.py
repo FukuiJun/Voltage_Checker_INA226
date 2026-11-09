@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
@@ -25,6 +26,8 @@ from ..theme import mono_font, ui_font
 from .widgets import sub_label
 
 LOT_TEXT_MAX_LEN = 30
+EMPLOYEE_ID_MAX_LEN = 20
+_EMPLOYEE_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z-]*$")  # 半角英数字とハイフン
 MAX_VOLTAGE_V = 36.0  # INA226 のバス電圧の範囲（5.1）
 _LIMIT_RE = re.compile(r"^\d{1,2}(\.\d{0,3})?$")  # 小数 3 桁まで
 
@@ -32,7 +35,7 @@ _LIMIT_RE = re.compile(r"^\d{1,2}(\.\d{0,3})?$")  # 小数 3 桁まで
 @dataclass(frozen=True)
 class LotInput:
     lot_name: str
-    operator: str
+    operator: str  # 測定者の社員番号（名前ではない）
     lower_V: float
     upper_V: float
     start_no: int
@@ -45,6 +48,24 @@ def parse_limit(text: str) -> float | None:
         return None
     v = float(t)
     return v if 0.0 <= v <= MAX_VOLTAGE_V else None
+
+
+def normalize_employee_id(text: str) -> str:
+    """全角の英数字・ハイフンを半角にし、前後の空白を除く（例：「０１２３４５」→「012345」）。"""
+    t = unicodedata.normalize("NFKC", text).strip()
+    return t.replace("ー", "-").replace("−", "-").replace("‐", "-")
+
+
+def is_valid_employee_id(text: str) -> bool:
+    """空（未入力）か、半角英数字とハイフンだけ（20 文字まで）なら True。"""
+    t = normalize_employee_id(text)
+    return not t or (len(t) <= EMPLOYEE_ID_MAX_LEN and bool(_EMPLOYEE_ID_RE.match(t)))
+
+
+def _latin_only(w) -> None:
+    """日本語入力（IME）を使わない欄にする（社員番号・電圧は半角で打てばよいので）。"""
+    w.setAttribute(Qt.WA_InputMethodEnabled, False)
+    w.setInputMethodHints(Qt.ImhLatinOnly | Qt.ImhNoPredictiveText)
 
 
 def _set_invalid(w, invalid: bool) -> None:
@@ -74,16 +95,22 @@ class LotDialog(QDialog):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(8)
         self.name_edit = QLineEdit(initial.lot_name)
+        self.name_edit.setMaxLength(LOT_TEXT_MAX_LEN)
+        self.name_edit.setFont(ui_font(14))
+        # 測定者は名前ではなく社員番号
         self.operator_edit = QLineEdit(initial.operator)
-        for w in (self.name_edit, self.operator_edit):
-            w.setMaxLength(LOT_TEXT_MAX_LEN)
-            w.setFont(ui_font(14))
+        self.operator_edit.setMaxLength(EMPLOYEE_ID_MAX_LEN)
+        self.operator_edit.setFont(mono_font(14))
+        self.operator_edit.setPlaceholderText("例 123456")
+        self.operator_edit.setToolTip("測定者の社員番号（半角の英数字。名前は入れません）")
+        _latin_only(self.operator_edit)
         self.lower_edit = QLineEdit(_limit_text(initial.lower_V))
         self.upper_edit = QLineEdit(_limit_text(initial.upper_V))
         for w in (self.lower_edit, self.upper_edit):
             w.setFont(mono_font(14))
             w.setPlaceholderText("例 3.600")
             w.setMaxLength(6)
+            _latin_only(w)
         self.start_spin = QSpinBox()
         self.start_spin.setRange(1, 9_999_999)
         self.start_spin.setValue(initial.start_no)
@@ -97,7 +124,7 @@ class LotDialog(QDialog):
 
         rows = (
             ("ロット名（必須）", self.name_edit),
-            ("測定者", self.operator_edit),
+            ("測定者（社員番号）", self.operator_edit),
             ("下限 [V]（必須）", self.lower_edit),
             ("上限 [V]（必須）", self.upper_edit),
             ("開始番号", self.start_spin),
@@ -124,20 +151,24 @@ class LotDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         lay.addWidget(self.buttons)
 
-        for w in (self.name_edit, self.lower_edit, self.upper_edit):
+        for w in (self.name_edit, self.operator_edit, self.lower_edit, self.upper_edit):
             w.textChanged.connect(self._validate)
         self._validate()
 
     def _validate(self) -> bool:
         name_ok = bool(self.name_edit.text().strip())
+        id_ok = is_valid_employee_id(self.operator_edit.text())
         lo = parse_limit(self.lower_edit.text())
         hi = parse_limit(self.upper_edit.text())
         order_ok = lo is not None and hi is not None and lo < hi
         _set_invalid(self.name_edit, not name_ok)
+        _set_invalid(self.operator_edit, not id_ok)
         _set_invalid(self.lower_edit, lo is None or (hi is not None and not order_ok))
         _set_invalid(self.upper_edit, hi is None or (lo is not None and not order_ok))
         if not name_ok:
             msg = "ロット名を入れてください"
+        elif not id_ok:
+            msg = "測定者は社員番号（半角の英数字）で入れてください。名前は入れません"
         elif lo is None or hi is None:
             msg = "下限・上限を 0〜36 V、小数 3 桁までで入れてください"
         elif not order_ok:
@@ -145,7 +176,7 @@ class LotDialog(QDialog):
         else:
             msg = ""
         self.error_label.setText(msg)
-        ok = name_ok and order_ok
+        ok = name_ok and id_ok and order_ok
         self.ok_button.setEnabled(ok)
         return ok
 
@@ -156,7 +187,7 @@ class LotDialog(QDialog):
     def value(self) -> LotInput:
         return LotInput(
             lot_name=self.name_edit.text().strip(),
-            operator=self.operator_edit.text().strip(),
+            operator=normalize_employee_id(self.operator_edit.text()),
             lower_V=parse_limit(self.lower_edit.text()) or 0.0,
             upper_V=parse_limit(self.upper_edit.text()) or 0.0,
             start_no=self.start_spin.value(),
