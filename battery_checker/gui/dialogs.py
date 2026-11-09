@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -89,7 +88,7 @@ class LotDialog(QDialog):
         self.start_spin.setRange(1, 9_999_999)
         self.start_spin.setValue(initial.start_no)
         self.start_spin.setFont(mono_font(14))
-        self.start_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        _style_spin(self.start_spin)
         self.start_spin.setEnabled(not editing)
         self.memo_edit = QPlainTextEdit(initial.memo)
         self.memo_edit.setFont(ui_font(14))
@@ -165,6 +164,15 @@ class LotDialog(QDialog):
         )
 
 
+def _style_spin(w) -> None:
+    """数値の入力欄の文字の位置を、ほかの入力欄（左余白 8px）にそろえる。
+
+    注意：setButtonSymbols(NoButtons) は使わない。スタイルシートと組み合わせると、
+    Qt が中の文字欄を幅 1px につぶして数値が見えなくなる（矢印は app.qss で幅 0 にして隠す）。
+    """
+    w.lineEdit().setTextMargins(7, 0, 0, 0)
+
+
 def _limit_text(v: float) -> str:
     return f"{v:.3f}" if v > 0 else ""
 
@@ -175,7 +183,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent, settings: Settings) -> None:
         super().__init__(parent)
         self.setWindowTitle("設定")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(560)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 12)
         lay.setSpacing(10)
@@ -196,7 +204,7 @@ class SettingsDialog(QDialog):
         self.stable_spin.setValue(settings.stable_width_mV)
         for w in (self.threshold_spin, self.stable_spin):
             w.setFont(mono_font(14))
-            w.setButtonSymbols(QAbstractSpinBox.NoButtons)
+            _style_spin(w)
         grid.addWidget(sub_label("接続判定電圧"), 0, 0)
         grid.addWidget(self.threshold_spin, 0, 1)
         grid.addWidget(sub_label("これ未満は「バッテリ未接続」", 11), 0, 2)

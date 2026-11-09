@@ -382,13 +382,33 @@ QStatusBar QLabel[error="true"] {
     font-weight: bold;
 }
 
+/* 数値の入力欄（設定・開始番号）。上下の矢印ボタンは出さない（キーボードで入力する）。
+   中の文字欄には、上の QLineEdit の枠・余白・高さを当てない（当てると幅 1px につぶれて数値が見えなくなる） */
 QDoubleSpinBox, QSpinBox {
     background: ${input_bg};
     color: ${text};
     border: 1px solid ${input_border};
     border-radius: 6px;
-    padding: 0 6px;
+    padding: 0;
     min-height: 30px;
+    min-width: 110px;
+    selection-background-color: ${badge_bg};
+    selection-color: ${badge_text};
+}
+QDoubleSpinBox:focus, QSpinBox:focus {
+    border-color: ${badge_bg};
+}
+QDoubleSpinBox QLineEdit, QSpinBox QLineEdit {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    min-height: 0;
+}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
+QSpinBox::up-button, QSpinBox::down-button {
+    width: 0;
+    border: none;
 }
 
 /* いま記録する番号（左パネルの最上部） */

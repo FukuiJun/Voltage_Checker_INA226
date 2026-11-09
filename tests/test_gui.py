@@ -514,3 +514,24 @@ def test_adjust_disabled_while_measuring(make_window, qapp):
     assert not w.plot.adjust_button.isEnabled() and not w.plot.adjustable
     assert wait_until(qapp, lambda: w.collector is None, 3.0)
     assert w.plot.adjust_button.isEnabled()
+
+
+def test_number_inputs_are_not_collapsed(qapp):
+    """設定・開始番号の数値欄：中の文字欄が幅 1px につぶれて数値が見えなくなる不具合（Qt の NoButtons ＋スタイルシート）の再発防止。"""
+    from battery_checker.gui.dialogs import LotDialog, SettingsDialog
+    from battery_checker.settings import Settings
+
+    s = SettingsDialog(None, Settings())
+    d = LotDialog(None, LotInput("A", "", 3.6, 4.2, 1, ""))
+    for dlg in (s, d):
+        dlg.show()
+    qapp.processEvents()
+    for spin in (s.threshold_spin, s.stable_spin, d.start_spin):
+        assert spin.lineEdit().width() > spin.width() * 0.6, (spin, spin.lineEdit().geometry())
+        assert spin.lineEdit().isVisible()
+    assert s.threshold_spin.text() == "0.50 V" and s.stable_spin.text() == "5.0 mV"
+    s.threshold_spin.lineEdit().selectAll()
+    QTest.keyClicks(s.threshold_spin.lineEdit(), "0.8")
+    assert s.threshold_spin.value() == pytest.approx(0.8)
+    s.close()
+    d.close()
