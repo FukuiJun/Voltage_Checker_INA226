@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetrics
@@ -13,6 +15,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
+    QHBoxLayout,
+    QPushButton,
     QGridLayout,
     QLabel,
     QLineEdit,
@@ -262,3 +267,94 @@ class SettingsDialog(QDialog):
         s.stable_width_mV = round(self.stable_spin.value(), 1)
         s.confirm_duplicate = self.duplicate_check.isChecked()
         s.sound = self.sound_check.isChecked()
+
+
+class ExportDialog(QDialog):
+    """出力（F-09）：保存先フォルダとファイル名。
+
+    ファイル名の初期値は `<ロット名>_<番号始め>-<番号終わり>_電圧記録_<日付>`。変えることもできる。
+    実際に保存する名前（使えない文字は _、同じ名前があれば _2 …）と、上書きになるかを下に出す。
+    resolve(folder, base) は (実際の基名, 前回の出力を上書きするか) を返す。
+    """
+
+    def __init__(self, parent, folder: str, default_base: str, resolve: Callable[[Path, str], tuple[str, bool]]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("出力（CSV・Excel）")
+        self.setMinimumWidth(620)
+        self._default = default_base
+        self._resolve = resolve
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 12)
+        lay.setSpacing(8)
+
+        lay.addWidget(sub_label("保存先フォルダ"))
+        row = QHBoxLayout()
+        self.folder_edit = QLineEdit(folder)
+        self.folder_edit.setReadOnly(True)
+        self.folder_edit.setFont(ui_font(13))
+        browse = QPushButton("参照…")
+        browse.clicked.connect(self._browse)
+        row.addWidget(self.folder_edit, 1)
+        row.addWidget(browse)
+        lay.addLayout(row)
+
+        lay.addWidget(sub_label("ファイル名（.csv と .xlsx の 2 つを保存します）"))
+        row = QHBoxLayout()
+        self.name_edit = QLineEdit(default_base)
+        self.name_edit.setFont(mono_font(13))
+        self.name_edit.setMaxLength(120)
+        self.reset_button = QPushButton("初期値に戻す")
+        self.reset_button.setToolTip("ロット名_番号始め-番号終わり_電圧記録_日付")
+        self.reset_button.clicked.connect(lambda: self.name_edit.setText(self._default))
+        row.addWidget(self.name_edit, 1)
+        row.addWidget(self.reset_button)
+        lay.addLayout(row)
+
+        self.preview_label = QLabel()
+        self.preview_label.setFont(ui_font(12))
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.preview_label)
+
+        buttons = QDialogButtonBox()
+        self.ok_button = buttons.addButton("保存", QDialogButtonBox.AcceptRole)
+        buttons.addButton("キャンセル", QDialogButtonBox.RejectRole)
+        self.ok_button.setDefault(True)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+        self.name_edit.textChanged.connect(self._update_preview)
+        self._update_preview()
+
+    def _browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "保存先フォルダ", self.folder_edit.text())
+        if folder:
+            self.folder_edit.setText(folder)
+            self._update_preview()
+
+    def _update_preview(self) -> None:
+        from ..filename import sanitize
+
+        name = sanitize(self.name_edit.text().strip())
+        self.ok_button.setEnabled(bool(name) and bool(self.folder_edit.text()))
+        if not name:
+            self.preview_label.setText("ファイル名を入れてください")
+            return
+        final, overwrite = self._resolve(Path(self.folder_edit.text()), name)
+        text = f"保存するファイル：{final}.csv ／ {final}.xlsx"
+        if overwrite:
+            text += "\n（このロットの前回の出力を上書きします）"
+        elif final != name:
+            text += f"\n（同じ名前のファイルがあるため「{final}」にします）"
+        elif name != self.name_edit.text().strip():
+            text += "\n（ファイル名に使えない文字・空白は _ にします）"
+        self.preview_label.setText(text)
+
+    @property
+    def folder(self) -> str:
+        return self.folder_edit.text()
+
+    @property
+    def base(self) -> str:
+        return self.name_edit.text().strip()

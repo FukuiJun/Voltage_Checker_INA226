@@ -5,8 +5,9 @@
 
 両方を一時ファイルに書いてから置き換える。どちらかが書けなければ、今回書いた方も消して
 両方とも失敗にする（INA226_Monitor の保存と同じ考え方）。
-同じロットを同じフォルダにもう一度出力したときは、前回の出力を上書きする（最新の一覧に置き換える）。
-別のロットと名前が重なるときは _2, _3 … を付ける。
+ファイル名の初期値は `<ロット名>_<番号始め>-<番号終わり>_電圧記録_<出力した日>`（出力の画面で変えられる）。
+同じロットを同じフォルダに同じ名前でもう一度出力したときは、前回の出力を上書きする。
+それ以外で同じ名前のファイルがあるときは _2, _3 … を付ける（ほかのファイルは上書きしない）。
 """
 
 from __future__ import annotations
@@ -14,12 +15,13 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Sequence
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import APP_NAME, __version__
 from .csvformat import CSV_ENCODING, format_csv
-from .filename import OUTPUT_EXTENSIONS, build_base_name, unique_base_name
+from .filename import OUTPUT_EXTENSIONS, build_base_name, sanitize, unique_base_name
 from .records import (
     SAMPLES_PER_RECORD,
     Judge,
@@ -44,6 +46,7 @@ class ExportResult:
     folder: Path
     base: str
     paths: list[Path] = field(default_factory=list)
+    overwritten: bool = False  # 前回の出力を上書きした
 
 
 class ExportError(Exception):
@@ -70,12 +73,25 @@ class Conditions:
         return f"{self.interval_ms} ms" if self.interval_ms is not None else "不明"
 
 
-def choose_base(folder: Path, info: LotInfo) -> str:
-    """出力の基名。同じロットを同じフォルダに出力し直すときは前回と同じ名前（上書き）。"""
+def default_base(info: LotInfo, records: Sequence[Record], when: datetime | None = None) -> str:
+    """ファイル名の初期値：`<ロット名>_<番号始め>-<番号終わり>_電圧記録_<YYYYMMDD>`。"""
+    nos = [r.no for r in records]
+    first = min(nos) if nos else info.start_no
+    last = max(nos) if nos else info.start_no
+    return build_base_name(info.lot_name, first, last, when or datetime.now())
+
+
+def resolve_base(folder: Path, info: LotInfo, base: str) -> tuple[str, bool]:
+    """実際に使う基名と、前回の出力を上書きするか。
+
+    同じロットを同じフォルダに同じ名前で出力し直すときは上書き。
+    それ以外で同じ名前のファイルがあれば _2, _3 … を付ける。
+    """
     folder = Path(folder)
-    if info.last_export_base and _same_dir(info.last_export_dir, folder):
-        return info.last_export_base
-    return unique_base_name(folder, build_base_name(info.started_dt, info.lot_name), OUTPUT_EXTENSIONS)
+    base = sanitize(base.strip())
+    if info.last_export_base == base and _same_dir(info.last_export_dir, folder):
+        return base, True
+    return unique_base_name(folder, base, OUTPUT_EXTENSIONS), False
 
 
 def _same_dir(a: str, b: Path) -> bool:
@@ -258,11 +274,22 @@ def write_xlsx(path: Path, info: LotInfo, records: Sequence[Record], cond: Condi
 
 
 # ================================================================ まとめて出力
-def export_lot(folder: Path, info: LotInfo, records: Sequence[Record], cond: Conditions) -> ExportResult:
-    """`<基名>.csv` と `<基名>.xlsx` を保存する。失敗したら ExportError（両方とも残さない）。"""
+def export_lot(
+    folder: Path,
+    info: LotInfo,
+    records: Sequence[Record],
+    cond: Conditions,
+    base: str | None = None,
+    when: datetime | None = None,
+) -> ExportResult:
+    """`<基名>.csv` と `<基名>.xlsx` を保存する。失敗したら ExportError（両方とも残さない）。
+
+    base を省くと初期値（default_base）。
+    """
     folder = Path(folder)
-    base = choose_base(folder, info)
-    result = ExportResult(folder, base)
+    wanted = base if base and sanitize(base.strip()) else default_base(info, records, when)
+    base, overwritten = resolve_base(folder, info, wanted)
+    result = ExportResult(folder, base, overwritten=overwritten)
     csv_path, xlsx_path = (folder / f"{base}{ext}" for ext in OUTPUT_EXTENSIONS)
     tmps = {p: p.with_name(f"~{p.stem}.tmp{p.suffix}") for p in (csv_path, xlsx_path)}
 

@@ -60,7 +60,13 @@ def make_window(qapp, tmp_path):
         w._ask = ask
         w._warn = w.warned.append
         w._info = w.infos.append
-        w._ask_export_folder = lambda: str(tmp_path / "out")
+        w.export_defaults = []
+
+        def ask_export(default):
+            w.export_defaults.append(default)
+            return str(tmp_path / "out"), default
+
+        w._ask_export = ask_export
         w.settings.sound = False
         w.show()
         created.append(w)
@@ -333,7 +339,11 @@ def test_export_and_end_lot(make_window, qapp, tmp_path):
     w.on_export()
     out = tmp_path / "out"
     names = sorted(p.name for p in out.iterdir())
-    assert names[0].endswith("_LOT-A12_電圧記録.csv") and names[1].endswith("_LOT-A12_電圧記録.xlsx")
+    from datetime import datetime
+
+    base = f"LOT-A12_1-2_電圧記録_{datetime.now():%Y%m%d}"
+    assert w.export_defaults == [base]  # 初期値：ロット_番号始め-番号終わり_電圧記録_日付
+    assert names == [f"{base}.csv", f"{base}.xlsx"]
     assert w.msg_label.text().startswith(f"保存しました：{out}")
     assert w.lot is not None and not w.lot.unexported
     # 続けて記録できる。出力していない記録があればロット終了で確認する
@@ -557,3 +567,23 @@ def test_operator_is_employee_id(qapp):
     d.operator_edit.setText("")
     assert d.ok_button.isEnabled() and d.value().operator == ""
     assert not d.operator_edit.testAttribute(Qt.WA_InputMethodEnabled)  # 日本語入力はオフ
+
+
+def test_export_dialog_preview(qapp, tmp_path):
+    from battery_checker.export import resolve_base
+    from battery_checker.gui.dialogs import ExportDialog
+    from battery_checker.records import LotInfo
+
+    info = LotInfo("x", "LOT-A12", 3.6, 4.2)
+    (tmp_path / "LOT-A12_1-5_電圧記録_20261109.csv").write_text("", encoding="utf-8")
+    d = ExportDialog(None, str(tmp_path), "LOT-A12_1-5_電圧記録_20261109", lambda f, b: resolve_base(f, info, b))
+    assert "LOT-A12_1-5_電圧記録_20261109_2.csv" in d.preview_label.text()  # 同じ名前があれば _2
+    info.last_export_dir, info.last_export_base = str(tmp_path), "LOT-A12_1-5_電圧記録_20261109"
+    d.name_edit.setText("LOT-A12_1-5_電圧記録_20261109 ")
+    assert "前回の出力を上書きします" in d.preview_label.text()
+    d.name_edit.setText("a b")
+    assert "a_b.csv" in d.preview_label.text() and d.ok_button.isEnabled()
+    d.name_edit.setText("")
+    assert not d.ok_button.isEnabled()
+    d.reset_button.click()
+    assert d.base == "LOT-A12_1-5_電圧記録_20261109"

@@ -47,9 +47,9 @@ def read_csv(path):
 def test_ac11_csv(tmp_path):
     info, book = make_lot(30)
     book.replace(3, make_record(3, Measurement(3.3, 3.3, 3.3), 3.6, 4.2, 0.005, T))
-    res = export_lot(tmp_path, info, book.records, COND)
-    assert res.base == "20261106_LOT-A12_電圧記録"
-    assert [p.name for p in res.paths] == ["20261106_LOT-A12_電圧記録.csv", "20261106_LOT-A12_電圧記録.xlsx"]
+    res = export_lot(tmp_path, info, book.records, COND, when=T)
+    assert res.base == "LOT-A12_1-30_電圧記録_20261106"  # ロット_番号始め-番号終わり_電圧記録_日付
+    assert [p.name for p in res.paths] == ["LOT-A12_1-30_電圧記録_20261106.csv", "LOT-A12_1-30_電圧記録_20261106.xlsx"]
     rows = read_csv(res.paths[0])
     assert rows[0] == ["no", "voltage_V", "judge", "min_V", "max_V", "measured_at", "remeasured", "note"]
     assert len(rows) - 1 == len(book)
@@ -59,7 +59,7 @@ def test_ac11_csv(tmp_path):
 
 def test_ac12_xlsx_contents(tmp_path):
     info, book = make_lot(200)
-    res = export_lot(tmp_path, info, book.records, COND)
+    res = export_lot(tmp_path, info, book.records, COND, when=T)
     wb = openpyxl.load_workbook(res.paths[1])
     assert wb.sheetnames == [SHEET_RECORDS, SHEET_SUMMARY, SHEET_CONDITIONS]
 
@@ -115,23 +115,50 @@ def test_ac12_xlsx_contents(tmp_path):
 
 def test_unknown_firmware(tmp_path):
     info, book = make_lot(3)
-    res = export_lot(tmp_path, info, book.records, Conditions(port="COM3"))
+    res = export_lot(tmp_path, info, book.records, Conditions(port="COM3"), when=T)
     cond = {r[0].value: r[1].value for r in openpyxl.load_workbook(res.paths[1])[SHEET_CONDITIONS].iter_rows(min_row=2, max_col=2)}
     assert cond["スケッチの版"] == "不明"
 
 
-def test_reexport_same_lot_overwrites_and_other_lot_gets_suffix(tmp_path):
+def test_default_name_follows_number_range_and_date(tmp_path):
+    from battery_checker.export import default_base
+
+    info, book = make_lot(352, start_no=1)
+    assert default_base(info, book.records, datetime(2026, 11, 9, 8, 0)) == "LOT-A12_1-352_電圧記録_20261109"
+    info2, book2 = make_lot(5, start_no=101, name="LOT B/2")
+    assert default_base(info2, book2.records, T) == "LOT_B_2_101-105_電圧記録_20261106"  # 使えない文字は _
+
+
+def test_reexport_same_name_overwrites_others_get_suffix(tmp_path):
     info, book = make_lot(5)
-    res = export_lot(tmp_path, info, book.records, COND)
+    res = export_lot(tmp_path, info, book.records, COND, when=T)
     info.last_export_dir, info.last_export_base = str(tmp_path), res.base
-    book.undo_last()
-    res2 = export_lot(tmp_path, info, book.records, COND)
-    assert res2.base == res.base
-    assert len(read_csv(res2.paths[0])) - 1 == 4
-    other, obook = make_lot(2)
+    assert not res.overwritten
+    # 記録が増えると番号の範囲が変わるので別のファイルになる（前のファイルは残る）
+    book.append(make_record(6, Measurement(3.8, 3.8, 3.8), 3.6, 4.2, 0.005, T))
+    res2 = export_lot(tmp_path, info, book.records, COND, when=T)
+    assert res2.base == "LOT-A12_1-6_電圧記録_20261106" and not res2.overwritten
+    info.last_export_base = res2.base
+    # 同じ範囲・同じ日にもう一度出力したら上書き
+    book.replace(6, make_record(6, Measurement(3.9, 3.9, 3.9), 3.6, 4.2, 0.005, T))
+    res3 = export_lot(tmp_path, info, book.records, COND, when=T)
+    assert res3.base == res2.base and res3.overwritten
+    assert read_csv(res3.paths[0])[-1][1] == "3.9000"
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        f"{b}{e}" for b in (res.base, res2.base) for e in (".csv", ".xlsx"))
+    # 別のロットが同じ名前になるときは上書きせず _2
+    other, obook = make_lot(6)
     other.lot_id = "20261106_150000"
-    res3 = export_lot(tmp_path, other, obook.records, COND)
-    assert res3.base == res.base + "_2"
+    res4 = export_lot(tmp_path, other, obook.records, COND, when=T)
+    assert res4.base == res2.base + "_2" and not res4.overwritten
+
+
+def test_user_given_name(tmp_path):
+    info, book = make_lot(3)
+    res = export_lot(tmp_path, info, book.records, COND, base="検査 結果:A", when=T)
+    assert res.base == "検査_結果_A"
+    res2 = export_lot(tmp_path, info, book.records, COND, base="   ", when=T)  # 空なら初期値
+    assert res2.base == "LOT-A12_1-3_電圧記録_20261106"
 
 
 def test_ac13_locked_xlsx_leaves_nothing(tmp_path, monkeypatch):
@@ -148,11 +175,11 @@ def test_ac13_locked_xlsx_leaves_nothing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ex.os, "replace", locked)
     with pytest.raises(ExportError) as e:
-        export_lot(tmp_path, info, book.records, COND)
-    assert str(e.value) == "20261106_LOT-A12_電圧記録.xlsx に書き込めません。Excel などで開いていないか確認してください"
+        export_lot(tmp_path, info, book.records, COND, when=T)
+    assert str(e.value) == "LOT-A12_1-5_電圧記録_20261106.xlsx に書き込めません。Excel などで開いていないか確認してください"
     assert list(tmp_path.iterdir()) == []
     monkeypatch.setattr(ex.os, "replace", real)
-    assert len(export_lot(tmp_path, info, book.records, COND).paths) == 2
+    assert len(export_lot(tmp_path, info, book.records, COND, when=T).paths) == 2
 
 
 def test_csv_locked_after_xlsx_removes_xlsx(tmp_path, monkeypatch):
@@ -168,14 +195,14 @@ def test_csv_locked_after_xlsx_removes_xlsx(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ex.os, "replace", locked)
     with pytest.raises(ExportError):
-        export_lot(tmp_path, info, book.records, COND)
+        export_lot(tmp_path, info, book.records, COND, when=T)
     assert list(tmp_path.iterdir()) == []
 
 
 def test_ac14_export_2000_within_10s(tmp_path):
     info, book = make_lot(2000)
     t = time.perf_counter()
-    res = export_lot(tmp_path, info, book.records, COND)
+    res = export_lot(tmp_path, info, book.records, COND, when=T)
     elapsed = time.perf_counter() - t
     assert elapsed < 10.0, elapsed
     assert openpyxl.load_workbook(res.paths[1], read_only=True)[SHEET_RECORDS].max_row == 2001

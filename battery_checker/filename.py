@@ -1,4 +1,4 @@
-"""出力ファイル名（基名）の生成（仕様 5.2）。sanitize・unique_base_name は INA226_Monitor v1.2.1 と同じ。"""
+"""出力ファイル名（基名）の生成。sanitize・unique_base_name は INA226_Monitor v1.2.1 と同じ。"""
 
 from __future__ import annotations
 
@@ -21,12 +21,13 @@ def stamp(dt: datetime) -> str:
     return dt.strftime("%Y%m%d_%H%M%S")
 
 
-def build_base_name(started_at: datetime, lot_name: str) -> str:
-    """`<ロット開始日 YYYYMMDD>_<ロット名>_電圧記録`（例：20261106_LOT-A12_電圧記録）。"""
-    parts = [started_at.strftime("%Y%m%d")]
-    if lot_name.strip():
-        parts.append(lot_name.strip())
-    parts.append(BASE_SUFFIX)
+def build_base_name(lot_name: str, first_no: int, last_no: int, when: datetime) -> str:
+    """出力ファイル名の初期値：`<ロット名>_<番号始め>-<番号終わり>_電圧記録_<日付 YYYYMMDD>`。
+
+    例：LOT-A12_1-352_電圧記録_20261109。日付は出力した日。ロット名が空なら飛ばす。
+    """
+    parts = [lot_name.strip()] if lot_name.strip() else []
+    parts += [f"{first_no}-{last_no}", BASE_SUFFIX, when.strftime("%Y%m%d")]
     return sanitize("_".join(parts))
 
 

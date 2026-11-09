@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -35,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__, sound
-from ..export import Conditions, ExportError, export_lot
+from ..export import Conditions, ExportError, default_base, export_lot, resolve_base
 from ..measure import BatteryMonitor, BatteryState, CollectResult, SampleCollector
 from ..paths import AppPaths, default_save_dir
 from ..protocol import (
@@ -59,7 +58,7 @@ from ..serial_io import PortOpenError, SerialReader, list_ports, open_port
 from ..settings import Settings
 from ..theme import app_icon, mono_font, ui_font
 from ..workfile import WorkFile, cleanup_finished, find_unfinished, finish_lot, load_lot, new_lot_id, read_records
-from .dialogs import LotDialog, LotInput, SettingsDialog
+from .dialogs import ExportDialog, LotDialog, LotInput, SettingsDialog
 from .plot_panel import DistributionPlot
 from .record_table import RecordTablePanel
 from .widgets import ElideLabel, FitLabel, NumberCard, divider, sub_label
@@ -401,8 +400,13 @@ class MainWindow(QMainWindow):
         box.exec()
         return buttons.get(box.clickedButton(), escape)
 
-    def _ask_export_folder(self) -> str:
-        return QFileDialog.getExistingDirectory(self, "出力先フォルダ", self.settings.save_dir)
+    def _ask_export(self, default: str) -> tuple[str, str] | None:
+        """出力先フォルダとファイル名（基名）を聞く。キャンセルなら None。"""
+        lot = self.lot
+        dlg = ExportDialog(self, self.settings.save_dir, default, lambda folder, base: resolve_base(folder, lot, base))
+        if dlg.exec() != ExportDialog.Accepted:
+            return None
+        return dlg.folder, dlg.base
 
     def _ask_lot(self, initial: LotInput, editing: bool) -> LotInput | None:
         dlg = LotDialog(self, initial, editing)
@@ -990,10 +994,11 @@ class MainWindow(QMainWindow):
     def on_export(self) -> None:
         if self.lot is None or not self.book or self.collector is not None:
             return
-        folder = self._ask_export_folder()
-        if not folder:
-            return
         lot = self.lot
+        answer = self._ask_export(default_base(lot, self.book.records))
+        if not answer:
+            return
+        folder, base = answer
         cond = Conditions(
             port=lot.port or self._device,
             interval_ms=lot.interval_ms if lot.interval_ms is not None else self.effective_interval_ms(),
@@ -1001,7 +1006,7 @@ class MainWindow(QMainWindow):
         )
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            res = export_lot(Path(folder), lot, self.book.records, cond)
+            res = export_lot(Path(folder), lot, self.book.records, cond, base=base)
         except ExportError as e:
             QApplication.restoreOverrideCursor()
             self.set_message(str(e), error=True)
