@@ -145,7 +145,7 @@ def test_ac04_no_battery_does_not_record(make_window, qapp):
     assert not w.record_button.isEnabled()
     QTest.keyClick(w, Qt.Key_Space)
     assert w.collector is None and len(w.book) == 0
-    assert w.msg_label.text() == MSG_NO_BATTERY
+    assert w.msg_label.text().startswith(MSG_NO_BATTERY)
     assert w.state_label.text() == "バッテリ未接続"
 
 
@@ -264,7 +264,7 @@ def test_undo_and_remeasure(make_window, qapp):
     w.table.select_no(1)
     assert w.remeasure_button.isEnabled()
     w.on_remeasure()
-    assert w.remeasure_no == 1 and w.result_main.text() == "No.1 を測り直します"
+    assert w.remeasure_no == 1 and w.msg_label.text().startswith("No.1 を測り直します")
     # 測り直し中は番号カードが「測り直す番号」に変わり、次の番号は変わらない
     assert w.number_card.number == "1" and w.number_card.property("mode") == "remeasure"
     assert w.number_card.caption_label.text() == "測り直す番号"
@@ -714,7 +714,7 @@ def test_continuous_mode_waits_for_removal(make_window, qapp):
     assert wait_until(qapp, lambda: len(w.book) == 1, 5.0)
     wait(qapp, 1.5)
     assert len(w.book) == 1
-    assert "バッテリを外してください" in w.result_sub.text()
+    assert "バッテリを外してください" in w.msg_label.text()
 
 
 def test_continuous_mode_off_on_disconnect(make_window, qapp):

@@ -48,7 +48,6 @@ from ..records import (
     DATETIME_FMT,
     Measurement,
     LotInfo,
-    Record,
     RecordBook,
     compute_stats,
     judge,
@@ -92,14 +91,6 @@ STATE_TEXT = {
 
 _TEXT_INPUTS = (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)
 _RECORD_KEYS = (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter)
-
-
-def _repolish(w: QWidget) -> None:
-    w.style().unpolish(w)
-    w.style().polish(w)
-    for child in w.findChildren(QWidget):
-        child.style().unpolish(child)
-        child.style().polish(child)
 
 
 class MainWindow(QMainWindow):
@@ -307,23 +298,6 @@ class MainWindow(QMainWindow):
             b.setMinimumWidth(0)
         self.record_button.setFixedHeight(72)
         lay.addWidget(self.record_button)
-
-        # 5. 直前の結果
-        self.result_box = QFrame()
-        self.result_box.setObjectName("resultBox")
-        rl = QVBoxLayout(self.result_box)
-        rl.setContentsMargins(12, 8, 12, 8)
-        rl.setSpacing(2)
-        self.result_main = FitLabel(ui_font(24, bold=True), min_px=14)
-        self.result_main.setAlignment(Qt.AlignCenter)
-        self.result_sub = QLabel()
-        self.result_sub.setFont(ui_font(13, bold=True))
-        self.result_sub.setAlignment(Qt.AlignCenter)
-        self.result_sub.setWordWrap(True)
-        rl.addWidget(self.result_main)
-        rl.addWidget(self.result_sub)
-        self.result_box.setMinimumHeight(78)
-        lay.addWidget(self.result_box)
 
         # 6. 取り消し・測り直し
         row = QHBoxLayout()
@@ -540,7 +514,6 @@ class MainWindow(QMainWindow):
             self.plot.set_limits(lot.lower_V, lot.upper_V)
             self.table.select_no(book.last.no if book.last else None)
         self._refresh_records()
-        self._show_result(None)
         self._update_buttons()
         self._update_status()
 
@@ -549,29 +522,6 @@ class MainWindow(QMainWindow):
         self._update_number()
         self.plot.refresh(book)
         self.summary_label.setText(summary_text(compute_stats(book.records)) if book else "")
-
-    def _show_result(self, rec: Record | None, sub: str = "", main: str | None = None, judge: str = "") -> None:
-        if rec is not None:
-            mark = "⚠ " if rec.has_warning else ""
-            ok_text = "OK" if rec.judge.is_ok else "NG"
-            main = f"{mark}No.{rec.no}　{rec.voltage_V:.4f} V　{ok_text}"
-            judge = "ok" if rec.judge.is_ok else "ng"
-            notes = [] if rec.judge.is_ok else [rec.judge.label]
-            if rec.note:
-                notes.append(rec.note)
-            if sub:
-                notes.insert(0, sub)
-            sub = "　".join(notes)
-        if main is None:
-            if self.remeasure_no is not None:
-                main, sub = f"No.{self.remeasure_no} を測り直します", "そのバッテリを繋いで「記録」（やめるときは Esc）"
-            else:
-                main = "---"
-        self.result_main.setText(main)
-        self.result_sub.setText(sub)
-        if self.result_box.property("judge") != judge:
-            self.result_box.setProperty("judge", judge)
-            _repolish(self.result_box)
 
     # ================================================================ F-01 ポート・接続
     def refresh_ports(self) -> None:
@@ -754,8 +704,7 @@ class MainWindow(QMainWindow):
             self.set_message(MSG_NO_LOT, error=True)
             return
         if not self.monitor.connected:
-            self.set_message(MSG_NO_BATTERY, error=True)
-            self._show_result(None, main=MSG_NO_BATTERY, sub="バッテリを繋いでから記録してください")
+            self.set_message(f"{MSG_NO_BATTERY}。バッテリを繋いでから記録してください", error=True)
             return
         if (
             self.remeasure_no is None
@@ -776,7 +725,6 @@ class MainWindow(QMainWindow):
         """記録ボタンの後の 5 回測定を始める（手動・自動・もう一度測定で共用）。"""
         self._pressed_mono = time.monotonic()
         self.collector = SampleCollector(time.time(), self.monitor.threshold_V)
-        self._show_result(None, main="測定中…", sub="")
         self._update_display(force=True)
 
     # ---- 連続測定モード
@@ -792,7 +740,7 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     def _show_continuous_hint(self) -> None:
-        """結果欄の下の行に、次にすることを出す（記録の結果の表示は残す）。"""
+        """連続測定モードで、次にすることをステータス欄に出す。"""
         if self.busy or self.remeasure_no is not None:
             return
         if self.monitor.connected and not self.monitor.detached_since_mark:
@@ -801,7 +749,7 @@ class MainWindow(QMainWindow):
             hint = "安定したら自動で記録します"
         else:
             hint = "次のバッテリを繋いでください"
-        self.result_sub.setText(hint)
+        self.set_message(f"連続測定モード：{hint}")
 
     def _try_auto_record(self) -> None:
         if not (self.continuous and self.reader is not None and self.lot is not None and not self.busy):
@@ -815,14 +763,12 @@ class MainWindow(QMainWindow):
     def _cancel_collect(self) -> None:
         if self.collector is not None:
             self.collector = None
-            self._show_result(None)
 
     def _finish_collect(self, res: CollectResult) -> None:
         self.collector = None
         if not res.ok:
             msg = res.failure.value
-            self.set_message(msg, error=True)
-            self._show_result(None, main="記録していません", sub=msg)
+            self.set_message(f"記録していません：{msg}", error=True)
             self._update_display(force=True)
             return
         lot = self.lot
@@ -831,7 +777,7 @@ class MainWindow(QMainWindow):
         if not rec.judge.is_ok and self.settings.confirm_ng:
             # NG：記録するか、もう一度測定するかを聞く。受信の処理（_poll）の中でウィンドウを出さないよう後で出す
             self._pending = (m, when)
-            self._show_result(None, main=f"NG　{m.median_V:.4f} V", sub=f"{rec.judge.label}　記録するか選んでください", judge="ng")
+            self.set_message(f"NG　{m.median_V:.4f} V（{rec.judge.label}）：記録するか選んでください", error=True)
             self._update_display(force=True)
             QTimer.singleShot(0, self._ask_ng)
             return
@@ -864,8 +810,7 @@ class MainWindow(QMainWindow):
             return
         # もう一度測定：記録せずに、繋いでいるバッテリをすぐ測り直す
         if self.reader is None or not self.monitor.connected:
-            self.set_message(MSG_NO_BATTERY, error=True)
-            self._show_result(None, main="記録していません", sub=MSG_NO_BATTERY)
+            self.set_message(f"記録していません：{MSG_NO_BATTERY}", error=True)
             self._update_display(force=True)
             return
         self.set_message(f"No.{no} をもう一度測定します")
@@ -897,13 +842,15 @@ class MainWindow(QMainWindow):
         saved = self.workfile.save(lot, book, appended=appended)
         self.last_save_s = time.monotonic() - t_save
         self.monitor.mark_recorded()
-        self._show_result(rec, sub=sub)
-        if self.continuous and not sub:
-            self.result_sub.setText("　".join(x for x in (self.result_sub.text(), "バッテリを外してください") if x))
         self.table.select_no(rec.no)
         self._refresh_records()
         if saved:
-            self.set_message(f"No.{rec.no} を記録しました（{rec.voltage_V:.4f} V　{rec.judge.label}）")
+            warn = f"　⚠ {rec.note}" if rec.note else ""
+            msg = f"No.{rec.no}：{sub}" if sub else f"No.{rec.no} を記録しました"
+            msg += f"（{rec.voltage_V:.4f} V　{rec.judge.label}）{warn}"
+            if self.continuous and not sub:
+                msg += "　バッテリを外してください"
+            self.set_message(msg, error=not rec.judge.is_ok)  # NG は赤字
         else:
             self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.csv_path}）", error=True)
         self._update_display(force=True)
@@ -939,9 +886,8 @@ class MainWindow(QMainWindow):
         self.monitor.detached_since_mark = True
         self.table.select_no(self.book.last.no if self.book.last else None)
         self._refresh_records()
-        self._show_result(None, main=f"No.{last.no} を取り消しました", sub=f"次は No.{self.book.next_no}")
         if not (self.workfile and self.workfile.dirty):
-            self.set_message(f"No.{last.no} を取り消しました")
+            self.set_message(f"No.{last.no} を取り消しました（次は No.{self.book.next_no}）")
         self._update_display(force=True)
 
     # ================================================================ F-07 測り直し
@@ -960,8 +906,7 @@ class MainWindow(QMainWindow):
         if self.book is None or self.book.get(no) is None:
             return
         self.remeasure_no = no
-        self._show_result(None)
-        self.set_message(f"No.{no} を測り直します")
+        self.set_message(f"No.{no} を測り直します：そのバッテリを繋いで「記録」（やめるときは Esc）")
         self._update_buttons()
 
     def cancel_remeasure(self) -> None:
@@ -969,8 +914,7 @@ class MainWindow(QMainWindow):
             return
         no = self.remeasure_no
         self.remeasure_no = None
-        self._show_result(None, main=f"No.{no} の測り直しをやめました")
-        self.set_message("")
+        self.set_message(f"No.{no} の測り直しをやめました")
         self._update_buttons()
 
     # ================================================================ F-02 ロット

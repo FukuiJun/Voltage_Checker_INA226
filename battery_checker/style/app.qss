@@ -320,18 +320,6 @@ QPushButton#recordButton:disabled {
     color: ${record_text_dis};
 }
 
-/* 直前の結果 */
-QFrame#resultBox {
-    background: ${input_bg};
-    border: 1px solid ${panel_border};
-    border-radius: 6px;
-}
-QFrame#resultBox[judge="ok"] { background: ${ok_bg}; border: none; }
-QFrame#resultBox[judge="ng"] { background: ${ng_bg}; border: none; }
-QFrame#panel QFrame#resultBox QLabel { color: ${text_sub}; }
-QFrame#panel QFrame#resultBox[judge="ok"] QLabel { color: ${ok_text}; }
-QFrame#panel QFrame#resultBox[judge="ng"] QLabel { color: ${ng_text}; }
-
 /* 出力・新しいロット・ロット終了 */
 QPushButton#exportButton, QPushButton#newLotButton, QPushButton#endLotButton {
     border-radius: 8px;
