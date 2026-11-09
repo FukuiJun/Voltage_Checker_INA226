@@ -420,3 +420,97 @@ def test_lot_dialog_validation(qapp):
     v = d.value()
     assert (v.lot_name, v.lower_V, v.upper_V, v.start_no) == ("LOT-A12", 3.6, 4.2, 1)
     assert d.name_edit.maxLength() == 30 and d.operator_edit.maxLength() == 30
+
+
+# ================================================================ グラフの線をドラッグして上下限を変える
+def _lot_with_records(make_window, volts):
+    from datetime import datetime
+
+    from battery_checker.records import Measurement, make_record
+
+    w = make_window()
+    w.start_lot(LOT)
+    for v in volts:
+        w.book.append(make_record(w.book.next_no, Measurement(v, v, v), 3.6, 4.2, 0.005, datetime(2026, 11, 9, 9, 0)))
+    w.workfile.save(w.lot, w.book)
+    w._show_lot()
+    return w
+
+
+def _drag(plot, line, value):
+    """ドラッグと同じ順で信号を出す（動かす → 離す）。"""
+    line.setValue(value)
+    line.sigPositionChangeFinished.emit(line)
+
+
+def test_limit_lines_adjust_toggle(make_window, qapp):
+    w = make_window()
+    assert not w.plot.adjust_button.isEnabled()  # ロットなし
+    w.start_lot(LOT)
+    assert w.plot.adjust_button.isEnabled() and not w.plot.upper_line.movable
+    assert w.plot.lower_line.label.textItem.toPlainText() == "下限 3.600 V"
+    assert w.plot.upper_line.label.textItem.toPlainText() == "上限 4.200 V"
+    w.plot.adjust_button.click()
+    assert w.plot.adjustable and w.plot.upper_line.movable and w.plot.lower_line.movable
+    w.plot.adjust_button.click()
+    assert not w.plot.upper_line.movable
+
+
+def test_drag_upper_limit_rejudges_after_confirm(make_window, qapp):
+    from battery_checker.workfile import read_records
+
+    w = _lot_with_records(make_window, [3.80, 3.95, 4.10, 4.15])
+    w.plot.set_adjustable(True)
+    previews = []
+    w.plot.limits_dragging.connect(lambda lo, hi, ng: previews.append((lo, hi, ng)))
+    w.answers = ["yes"]
+    _drag(w.plot, w.plot.upper_line, 4.0004)  # 0.001 V 刻みに合わせる
+    assert w.plot.upper_line.value() == 4.0
+    assert previews[-1] == (3.6, 4.0, 2)  # 動かしている間：NG になる件数
+    assert len(w.asked) == 1 and "判定が変わる記録が 2 件" in w.asked[0]
+    assert (w.lot.lower_V, w.lot.upper_V) == (3.6, 4.0)
+    assert [r.judge.value for r in w.book.records] == ["OK", "OK", "NG_HIGH", "NG_HIGH"]
+    assert w.lot_label.text() == "LOT-A12 ／ 下限 3.600 V・上限 4.000 V"
+    assert w.plot.upper_line.label.textItem.toPlainText() == "上限 4.000 V"
+    assert (w.settings.lower_V, w.settings.upper_V) == (3.6, 4.0)  # 次のロットの初期値
+    recs = read_records(w.workfile.csv_path, 1)[0]
+    assert [r.judge.value for r in recs] == ["OK", "OK", "NG_HIGH", "NG_HIGH"]
+
+
+def test_drag_declined_reverts(make_window, qapp):
+    w = _lot_with_records(make_window, [3.80, 4.10])
+    w.plot.set_adjustable(True)
+    w.answers = ["no"]
+    _drag(w.plot, w.plot.upper_line, 4.0)
+    assert (w.lot.upper_V, w.plot.upper_line.value()) == (4.2, 4.2)
+    assert all(r.judge.value == "OK" for r in w.book.records)
+    assert w.plot.ng_item.data.size == 0  # 色も元に戻る
+
+
+def test_drag_without_judgement_change_does_not_ask(make_window, qapp):
+    w = _lot_with_records(make_window, [3.80])
+    w.plot.set_adjustable(True)
+    _drag(w.plot, w.plot.lower_line, 3.55)
+    assert w.asked == [] and w.lot.lower_V == 3.55
+
+
+def test_limit_lines_cannot_cross(make_window, qapp):
+    w = _lot_with_records(make_window, [])
+    w.plot.set_adjustable(True)
+    w.plot.lower_line.setValue(5.0)  # 上限より上には行けない
+    assert w.plot.lower_line.value() == pytest.approx(4.199)
+    w.plot.upper_line.setValue(1.0)
+    assert w.plot.upper_line.value() == pytest.approx(4.2)  # 下限＋0.001 より下には行けない
+
+
+def test_adjust_disabled_while_measuring(make_window, qapp):
+    w = make_window(speed=5.0)
+    connect(w, qapp, "MOCK3")
+    w.start_lot(LOT)
+    assert wait_stable_new_battery(w, qapp)
+    w.plot.set_adjustable(True)
+    w.on_record()
+    assert w.collector is not None
+    assert not w.plot.adjust_button.isEnabled() and not w.plot.adjustable
+    assert wait_until(qapp, lambda: w.collector is None, 3.0)
+    assert w.plot.adjust_button.isEnabled()

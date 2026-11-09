@@ -412,3 +412,17 @@ QFrame#panel QFrame#numberCard QLabel#numberSub { color: ${limit_line}; }
 QFrame#panel QFrame#numberCard[mode="remeasure"] QLabel#numberPrefix,
 QFrame#panel QFrame#numberCard[mode="remeasure"] QLabel#numberSub { color: ${header_text}; }
 QFrame#panel QFrame#numberCard[mode="none"] QLabel { color: ${text_sub}; }
+
+/* 分布グラフ：上下限の調整 */
+QPushButton#adjustButton {
+    min-height: 26px;
+    padding: 0 12px;
+}
+QPushButton#adjustButton:checked {
+    background: ${range_sel_bg};
+    color: ${range_sel_text};
+    border-color: ${range_sel_bg};
+}
+QFrame#panel QLabel#adjustHint {
+    color: ${badge_bg};
+}

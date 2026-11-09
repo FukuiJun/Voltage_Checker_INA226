@@ -45,7 +45,16 @@ from ..protocol import (
     parse_firmware_banner,
     parse_interval_ack,
 )
-from ..records import DATETIME_FMT, LotInfo, Record, RecordBook, compute_stats, make_record, summary_text
+from ..records import (
+    DATETIME_FMT,
+    LotInfo,
+    Record,
+    RecordBook,
+    compute_stats,
+    judge,
+    make_record,
+    summary_text,
+)
 from ..serial_io import PortOpenError, SerialReader, list_ports, open_port
 from ..settings import Settings
 from ..theme import app_icon, mono_font, ui_font
@@ -161,6 +170,8 @@ class MainWindow(QMainWindow):
         self.table = RecordTablePanel()
         self.table.view.selectionModel().selectionChanged.connect(lambda *_: self._update_buttons())
         self.plot = DistributionPlot()
+        self.plot.limits_dragging.connect(self._on_limits_dragging)
+        self.plot.limits_changed.connect(self.on_limits_dragged)
         right.addWidget(self.table, 55)
         right.addWidget(self.plot, 45)
         actions = QHBoxLayout()
@@ -415,6 +426,7 @@ class MainWindow(QMainWindow):
         self.new_lot_button.setEnabled(not measuring)
         self.end_lot_button.setEnabled(has_lot and not measuring)
         self.lot_settings_button.setEnabled(has_lot and not measuring)
+        self.plot.set_adjust_enabled(has_lot and not measuring)
         self.settings_button.setEnabled(not measuring)
         self.port_combo.setEnabled(not connected and not measuring)
         self.refresh_button.setEnabled(not connected and not measuring)
@@ -919,10 +931,42 @@ class MainWindow(QMainWindow):
         sel = self.table.selected_no()
         self._show_lot()
         self.table.select_no(sel)
+        if limits_changed:
+            # 次のロットの初期値にも使う（F-02：前回の値を初期表示）
+            self.settings.lower_V, self.settings.upper_V = lot.lower_V, lot.upper_V
+            self.settings.save(self.paths.settings_file)
         msg = "ロット設定を変えました"
         if limits_changed:
-            msg += f"（判定をやり直しました。変わった記録 {changed} 件）"
+            msg += f"（{lot.limits_text()}。判定をやり直しました。変わった記録 {changed} 件）"
         self.set_message(msg)
+
+    # ---- グラフの線をドラッグして上下限を変える
+    def _on_limits_dragging(self, lower_V: float, upper_V: float, ng: int) -> None:
+        now = compute_stats(self.book.records).ng if self.book else 0
+        self.set_message(f"下限 {lower_V:.3f} V・上限 {upper_V:.3f} V にすると NG {ng:,} 件（いま {now:,} 件）")
+
+    def on_limits_dragged(self, lower_V: float, upper_V: float) -> None:
+        """グラフの上下限の線を離した。判定が変わる記録があれば確認してから変える。"""
+        lot, book = self.lot, self.book
+        if lot is None or book is None or self.collector is not None:
+            if lot is not None:
+                self.plot.set_limits(lot.lower_V, lot.upper_V)
+                self.plot.refresh(book)
+            return
+        changed = sum(1 for r in book.records if judge(r.voltage_V, lower_V, upper_V) is not r.judge)
+        if changed:
+            ans = self._ask(
+                f"上下限を 下限 {lower_V:.3f} V・上限 {upper_V:.3f} V に変えます。\n"
+                f"判定が変わる記録が {changed:,} 件あります。変更しますか？",
+                [("yes", "変更する"), ("no", "やめる")],
+                escape="no",
+            )
+            if ans != "yes":
+                self.plot.set_limits(lot.lower_V, lot.upper_V)
+                self.plot.refresh(book)
+                self.set_message("上下限の変更をやめました")
+                return
+        self.apply_lot_settings(LotInput(lot.lot_name, lot.operator, lower_V, upper_V, lot.start_no, lot.memo))
 
     def on_end_lot(self, confirm: bool = True) -> bool:
         """「ロット終了」。終了したら True。"""
