@@ -46,6 +46,7 @@ from ..protocol import (
 )
 from ..records import (
     DATETIME_FMT,
+    Measurement,
     LotInfo,
     Record,
     RecordBook,
@@ -79,6 +80,8 @@ MSG_DISCONNECTED = "Arduino との接続が切れました"
 MSG_OLD_SKETCH = "Arduino のスケッチが周期変更に対応していません（50 ms で記録します）"
 MSG_DUPLICATE = "前回と同じバッテリのようです。もう一度記録しますか？"
 MSG_WORKFILE_ERROR = "作業ファイルに書き込めません"
+RECORD_TEXT = "● 記録（Space）"
+CONTINUOUS_TEXT = "● 連続測定中（自動で記録）"
 
 STATE_TEXT = {
     BatteryState.NO_DATA: ("データ待ち", "none"),
@@ -123,6 +126,8 @@ class MainWindow(QMainWindow):
         # 測定
         self.monitor = BatteryMonitor(self.settings.connect_threshold_V, self.settings.stable_width_mV / 1000)
         self.collector: SampleCollector | None = None
+        self._pending: tuple[Measurement, datetime] | None = None  # NG の確認待ちの測定結果
+        self.continuous = False  # 連続測定モード
         self._pressed_mono = 0.0
         self.last_latency_s: float | None = None  # 記録ボタンから結果表示まで（AC-15 の確認用）
         self.last_collect_s: float | None = None  # そのうち 5 個を集めるのにかかった時間
@@ -287,8 +292,19 @@ class MainWindow(QMainWindow):
         bl.addWidget(unit, 0, Qt.AlignBottom)
         lay.addWidget(badge)
 
-        # 4. 記録ボタン
-        self.record_button = self._button("● 記録（Space）", "recordButton", self.on_record, 22)
+        # 4. 連続測定モードの切り替えと記録ボタン
+        self.continuous_button = self._button(
+            "連続測定モード：オフ", "continuousButton", lambda: self.set_continuous(not self.continuous), 13, bold=False
+        )
+        self.continuous_button.setCheckable(True)
+        self.continuous_button.setToolTip("オンにすると、電圧が安定したら自動で記録します。バッテリを外して 0 V になると次を記録できます")
+        self.continuous_button.setMinimumHeight(34)
+        lay.addWidget(self.continuous_button)
+        self.record_button = self._button(RECORD_TEXT, "recordButton", self.on_record, 22)
+        for b in (self.record_button, self.continuous_button):
+            # 文字の長さで左パネル（幅固定）を広げない
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            b.setMinimumWidth(0)
         self.record_button.setFixedHeight(72)
         lay.addWidget(self.record_button)
 
@@ -415,9 +431,14 @@ class MainWindow(QMainWindow):
         return dlg.value() if dlg.exec() == LotDialog.Accepted else None
 
     # ================================================================ 表示更新
+    @property
+    def busy(self) -> bool:
+        """測定中（5 個を集めている）か、NG の確認待ち。この間はほかの操作をさせない。"""
+        return self.collector is not None or self._pending is not None
+
     def _update_buttons(self) -> None:
         connected = self.reader is not None
-        measuring = self.collector is not None
+        measuring = self.busy
         has_lot = self.lot is not None and self.book is not None
         n = len(self.book) if self.book else 0
         battery = self.monitor.connected
@@ -438,12 +459,16 @@ class MainWindow(QMainWindow):
         self.refresh_button.setEnabled(not connected and not measuring)
         self.connect_button.setEnabled(not measuring and (connected or bool(self.port_combo.currentData())))
         self.connect_button.setText("切断" if connected else "接続")
+        self.continuous_button.setEnabled(connected and has_lot and not measuring)
+        if self.continuous_button.isChecked() != self.continuous:
+            self.continuous_button.setChecked(self.continuous)
+        self.continuous_button.setText(f"連続測定モード：{'オン' if self.continuous else 'オフ'}")
         self._update_number()
         if self.remeasure_no is not None:
             self.record_button.setText(f"● No.{self.remeasure_no} を測り直す（Space）")
             self.remeasure_button.setText("測り直しをやめる")
         else:
-            self.record_button.setText("● 記録（Space）")
+            self.record_button.setText(CONTINUOUS_TEXT if self.continuous else RECORD_TEXT)
             self.remeasure_button.setText("この番号を測り直す")
 
     def _update_number(self) -> None:
@@ -470,6 +495,8 @@ class MainWindow(QMainWindow):
             text, state = STATE_TEXT[self.monitor.state]
         if self.collector is not None:
             text = "測定中…"
+        elif self._pending is not None:
+            text = "NG の確認中"
         if self.state_label.text() != text or self.state_label.property("state") != state:
             self.state_label.setText(text)
             self.state_label.setProperty("state", state)
@@ -573,7 +600,7 @@ class MainWindow(QMainWindow):
             self.connect_port()
 
     def connect_port(self) -> bool:
-        if self.reader is not None or self.collector is not None:
+        if self.reader is not None or self.busy:
             return False
         device = self.port_combo.currentData()
         if not device:
@@ -605,6 +632,7 @@ class MainWindow(QMainWindow):
 
     def disconnect_port(self, message: str = "切断しました") -> None:
         self._cancel_collect()
+        self.continuous = False
         if self.reader is not None:
             self.reader.stop()
             self.reader = None
@@ -668,7 +696,10 @@ class MainWindow(QMainWindow):
             log.warning("データが届いていません（%s）", self._device)
             self.set_message(MSG_NO_DATA)
         # バッテリの付け外しは記録ボタンの有効・無効に関わるので、すぐ描き直す
+        if self.continuous and self.monitor.connected != was_connected:
+            self._show_continuous_hint()
         self._update_display(force=status_changed or self.monitor.connected != was_connected)
+        self._try_auto_record()
         if disconnected is not None:
             log.warning("%s: %s", MSG_DISCONNECTED, disconnected)
             self.disconnect_port(MSG_DISCONNECTED)
@@ -714,8 +745,8 @@ class MainWindow(QMainWindow):
         return True
 
     def on_record(self) -> None:
-        if self.collector is not None:
-            return  # 集めている間の再入力は無視する
+        if self.busy:
+            return  # 集めている間・NG の確認待ちの再入力は無視する
         if self.reader is None:
             self.set_message(MSG_NOT_CONNECTED, error=True)
             return
@@ -739,10 +770,47 @@ class MainWindow(QMainWindow):
             if self.reader is None or not self.monitor.connected:
                 self.set_message(MSG_NO_BATTERY, error=True)
                 return
+        self._start_collect()
+
+    def _start_collect(self) -> None:
+        """記録ボタンの後の 5 回測定を始める（手動・自動・もう一度測定で共用）。"""
         self._pressed_mono = time.monotonic()
         self.collector = SampleCollector(time.time(), self.monitor.threshold_V)
         self._show_result(None, main="測定中…", sub="")
         self._update_display(force=True)
+
+    # ---- 連続測定モード
+    def set_continuous(self, on: bool) -> None:
+        """連続測定モード：電圧が安定したら自動で記録し、0 V（接続判定電圧未満）になったら次を待つ。"""
+        on = bool(on) and self.reader is not None and self.lot is not None and not self.busy
+        self.continuous = on
+        if on:
+            self.set_message("連続測定モード：安定したら自動で記録します（バッテリを外すと次を記録できます）")
+            self._show_continuous_hint()
+        else:
+            self.set_message("連続測定モードを終わりました")
+        self._update_buttons()
+
+    def _show_continuous_hint(self) -> None:
+        """結果欄の下の行に、次にすることを出す（記録の結果の表示は残す）。"""
+        if self.busy or self.remeasure_no is not None:
+            return
+        if self.monitor.connected and not self.monitor.detached_since_mark:
+            hint = "バッテリを外してください"
+        elif self.monitor.connected:
+            hint = "安定したら自動で記録します"
+        else:
+            hint = "次のバッテリを繋いでください"
+        self.result_sub.setText(hint)
+
+    def _try_auto_record(self) -> None:
+        if not (self.continuous and self.reader is not None and self.lot is not None and not self.busy):
+            return
+        if QApplication.activeModalWidget() is not None:
+            return  # ほかの確認ウィンドウが出ている間は待つ
+        # 前回の記録の後に一度 0 V（接続判定電圧未満）になり、いま安定している
+        if self.monitor.detached_since_mark and self.monitor.state is BatteryState.STABLE:
+            self._start_collect()
 
     def _cancel_collect(self) -> None:
         if self.collector is not None:
@@ -757,9 +825,55 @@ class MainWindow(QMainWindow):
             self._show_result(None, main="記録していません", sub=msg)
             self._update_display(force=True)
             return
+        lot = self.lot
+        m, when = res.measurement, datetime.now()
+        rec = make_record(0, m, lot.lower_V, lot.upper_V, self.settings.stable_width_mV / 1000, when)
+        if not rec.judge.is_ok and self.settings.confirm_ng:
+            # NG：記録するか、もう一度測定するかを聞く。受信の処理（_poll）の中でウィンドウを出さないよう後で出す
+            self._pending = (m, when)
+            self._show_result(None, main=f"NG　{m.median_V:.4f} V", sub=f"{rec.judge.label}　記録するか選んでください", judge="ng")
+            self._update_display(force=True)
+            QTimer.singleShot(0, self._ask_ng)
+            return
+        self._commit(m, when)
+
+    def _ask_ng(self) -> None:
+        """NG の注意ウィンドウ：「記録する」（既定。Enter）か「もう一度測定」（Esc）。"""
+        if self._pending is None or self.lot is None or self.book is None:
+            self._pending = None
+            return
+        m, when = self._pending
+        lot = self.lot
+        rec = make_record(0, m, lot.lower_V, lot.upper_V, self.settings.stable_width_mV / 1000, when)
+        no = self.remeasure_no if self.remeasure_no is not None else self.book.next_no
+        if rec.judge.value == "NG_LOW":
+            why = f"下限未満。下限 {lot.lower_V:.3f} V"
+        else:
+            why = f"上限超え。上限 {lot.upper_V:.3f} V"
+        if self.settings.sound:
+            sound.play(False)
+        ans = self._ask(
+            f"NG です：No.{no}　{m.median_V:.4f} V（{why}）\n"
+            "このまま記録しますか？　それとも、もう一度測定しますか？",
+            [("record", "記録する"), ("retry", "もう一度測定")],
+            escape="retry",
+        )
+        self._pending = None
+        if ans == "record":
+            self._commit(m, when, sounded=True)
+            return
+        # もう一度測定：記録せずに、繋いでいるバッテリをすぐ測り直す
+        if self.reader is None or not self.monitor.connected:
+            self.set_message(MSG_NO_BATTERY, error=True)
+            self._show_result(None, main="記録していません", sub=MSG_NO_BATTERY)
+            self._update_display(force=True)
+            return
+        self.set_message(f"No.{no} をもう一度測定します")
+        self._start_collect()
+
+    def _commit(self, m: Measurement, when: datetime, sounded: bool = False) -> None:
+        """測定結果を記録として確定する（追加、または測り直しの置き換え）→ 作業ファイルに保存 → 表示。"""
         lot, book = self.lot, self.book
-        m = res.measurement
-        when = datetime.now()
         width = self.settings.stable_width_mV / 1000
         if self.remeasure_no is not None and book.get(self.remeasure_no) is not None:
             no = self.remeasure_no
@@ -784,6 +898,8 @@ class MainWindow(QMainWindow):
         self.last_save_s = time.monotonic() - t_save
         self.monitor.mark_recorded()
         self._show_result(rec, sub=sub)
+        if self.continuous and not sub:
+            self.result_sub.setText("　".join(x for x in (self.result_sub.text(), "バッテリを外してください") if x))
         self.table.select_no(rec.no)
         self._refresh_records()
         if saved:
@@ -792,7 +908,7 @@ class MainWindow(QMainWindow):
             self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.csv_path}）", error=True)
         self._update_display(force=True)
         self.last_latency_s = time.monotonic() - self._pressed_mono
-        if self.settings.sound:
+        if self.settings.sound and not sounded:
             sound.play(rec.judge.is_ok)
 
     def _save_workfile(self, appended: bool = False) -> None:
@@ -803,7 +919,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ F-06 取り消し
     def on_undo(self) -> None:
-        if self.collector is not None or self.book is None or not len(self.book):
+        if self.busy or self.book is None or not len(self.book):
             return
         if QApplication.activeModalWidget() is not None:
             return
@@ -830,7 +946,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ F-07 測り直し
     def on_remeasure(self) -> None:
-        if self.collector is not None or self.book is None:
+        if self.busy or self.book is None:
             return
         if self.remeasure_no is not None:
             self.cancel_remeasure()
@@ -849,7 +965,7 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     def cancel_remeasure(self) -> None:
-        if self.remeasure_no is None or self.collector is not None:
+        if self.remeasure_no is None or self.busy:
             return
         no = self.remeasure_no
         self.remeasure_no = None
@@ -859,7 +975,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ F-02 ロット
     def on_new_lot(self) -> None:
-        if self.collector is not None:
+        if self.busy:
             return
         if self.lot is not None:
             ans = self._ask(
@@ -917,10 +1033,11 @@ class MainWindow(QMainWindow):
     def _close_lot(self) -> None:
         self.lot = self.book = self.workfile = None
         self.remeasure_no = None
+        self.continuous = False
         self._show_lot()
 
     def on_lot_settings(self) -> None:
-        if self.lot is None or self.collector is not None:
+        if self.lot is None or self.busy:
             return
         lot = self.lot
         initial = LotInput(lot.lot_name, lot.operator, lot.lower_V, lot.upper_V, lot.start_no, lot.memo)
@@ -957,7 +1074,7 @@ class MainWindow(QMainWindow):
     def on_limits_dragged(self, lower_V: float, upper_V: float) -> None:
         """グラフの上下限の線を離した。判定が変わる記録があれば確認してから変える。"""
         lot, book = self.lot, self.book
-        if lot is None or book is None or self.collector is not None:
+        if lot is None or book is None or self.busy:
             if lot is not None:
                 self.plot.set_limits(lot.lower_V, lot.upper_V)
                 self.plot.refresh(book)
@@ -979,7 +1096,7 @@ class MainWindow(QMainWindow):
 
     def on_end_lot(self, confirm: bool = True) -> bool:
         """「ロット終了」。終了したら True。"""
-        if self.lot is None or self.collector is not None:
+        if self.lot is None or self.busy:
             return False
         if confirm:
             if self.lot.unexported and len(self.book) > 0:
@@ -997,7 +1114,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ F-09 出力
     def on_export(self) -> None:
-        if self.lot is None or not self.book or self.collector is not None:
+        if self.lot is None or not self.book or self.busy:
             return
         lot = self.lot
         answer = self._ask_export(default_base(lot, self.book.records))
@@ -1090,7 +1207,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ 設定
     def on_settings(self) -> None:
-        if self.collector is not None:
+        if self.busy:
             return
         dlg = SettingsDialog(self, self.settings)
         if dlg.exec() != SettingsDialog.Accepted:

@@ -27,6 +27,7 @@ class Settings:
     connect_threshold_V: float = DEFAULT_CONNECT_THRESHOLD_V
     stable_width_mV: float = DEFAULT_STABLE_WIDTH_MV
     confirm_duplicate: bool = True
+    confirm_ng: bool = True  # NG のときに「記録する／もう一度測定」を聞く
     sound: bool = True
 
     @classmethod

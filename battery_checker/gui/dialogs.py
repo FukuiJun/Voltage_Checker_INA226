@@ -250,9 +250,12 @@ class SettingsDialog(QDialog):
         lay.addLayout(grid)
         self.duplicate_check = QCheckBox("バッテリを外さずに 2 回記録しようとしたら確認する")
         self.duplicate_check.setChecked(settings.confirm_duplicate)
+        self.ng_check = QCheckBox("NG のときに「記録する／もう一度測定」を確認する")
+        self.ng_check.setChecked(settings.confirm_ng)
         self.sound_check = QCheckBox("記録したときに音を鳴らす（OK と NG で違う音）")
         self.sound_check.setChecked(settings.sound)
         lay.addWidget(self.duplicate_check)
+        lay.addWidget(self.ng_check)
         lay.addWidget(self.sound_check)
         buttons = QDialogButtonBox()
         ok = buttons.addButton("OK", QDialogButtonBox.AcceptRole)
@@ -266,6 +269,7 @@ class SettingsDialog(QDialog):
         s.connect_threshold_V = round(self.threshold_spin.value(), 2)
         s.stable_width_mV = round(self.stable_spin.value(), 1)
         s.confirm_duplicate = self.duplicate_check.isChecked()
+        s.confirm_ng = self.ng_check.isChecked()
         s.sound = self.sound_check.isChecked()
 
 

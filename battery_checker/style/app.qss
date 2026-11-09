@@ -446,3 +446,11 @@ QPushButton#adjustButton:checked {
 QFrame#panel QLabel#adjustHint {
     color: ${badge_bg};
 }
+
+/* 連続測定モードの切り替え（オンのときは濃い朽葉色） */
+QPushButton#continuousButton:checked {
+    background: ${badge_bg};
+    color: ${badge_text};
+    border-color: ${badge_bg};
+    font-weight: bold;
+}

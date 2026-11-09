@@ -187,7 +187,9 @@ def test_ac15_space_records_20_in_a_row(make_window, qapp, monkeypatch):
         assert record_and_wait(w, qapp, key=True)
         latencies.append((round(w.last_latency_s, 3), round(w.last_collect_s, 3), round(w.last_save_s, 3)))
     assert [r.no for r in w.book.records] == list(range(1, 21))
-    assert w.asked == []  # 毎回バッテリを外しているので確認は出ない
+    from battery_checker.gui.main_window import MSG_DUPLICATE
+
+    assert MSG_DUPLICATE not in w.asked  # 毎回バッテリを外しているので二重記録の確認は出ない
     # (全体, 5 個を集める, 作業ファイルの保存) の秒。共有の CI マシンでは、ディスクの flush（fsync）が
     # たまに 1 回だけ遅くなることがあるので、20 件中 19 件が 0.5 秒以内・全件 1.5 秒以内を確かめる。
     # 1 件の 0.5 秒以内は test_record_latency_real_time（実時間）で厳密に確かめる。
@@ -591,3 +593,124 @@ def test_export_dialog_preview(qapp, tmp_path):
     assert not d.ok_button.isEnabled()
     d.reset_button.click()
     assert d.base == "LOT-A12_1-5_電圧記録_20261109"
+
+
+# ================================================================ NG の確認ウィンドウ
+NG_LOT = LotInput("LOT-NG", "123456", 3.8, 4.2, 1, "")  # MOCK3 の電圧 3.7363 V は下限未満
+
+
+def _ng_window(make_window, qapp, answers):
+    w = make_window(speed=5.0, answers=answers)
+    w.settings.confirm_duplicate = False
+    connect(w, qapp, "MOCK3")
+    w.start_lot(NG_LOT)
+    assert wait_stable_new_battery(w, qapp)
+    return w
+
+
+def _ng_asked(w):
+    return [a for a in w.asked if a.startswith("NG です")]
+
+
+def test_ng_confirm_record(make_window, qapp):
+    w = _ng_window(make_window, qapp, ["record"])
+    w.on_record()
+    assert wait_until(qapp, lambda: len(w.book) == 1, 3.0)
+    asked = _ng_asked(w)
+    assert len(asked) == 1 and asked[0].startswith("NG です：No.1　3.7363 V（下限未満。下限 3.800 V）")
+    assert w.book.get(1).judge.value == "NG_LOW" and not w.busy
+
+
+def test_ng_confirm_retry_then_record(make_window, qapp):
+    w = _ng_window(make_window, qapp, ["retry", "record"])
+    w.on_record()
+    assert wait_until(qapp, lambda: len(w.book) == 1, 5.0)
+    assert len(_ng_asked(w)) == 2  # もう一度測定 → また NG なので再び確認
+    assert w.book.next_no == 2
+
+
+def test_ng_pending_blocks_other_operations(make_window, qapp):
+    w = _ng_window(make_window, qapp, [])
+    seen = {}
+
+    def ask(text, choices, escape):
+        # 確認ウィンドウが出ている間の状態を記録してから「記録する」
+        seen.update(busy=w.busy, record=w.record_button.isEnabled(), export=w.export_button.isEnabled(),
+                    state=w.state_label.text())
+        w.asked.append(text)
+        return "record"
+
+    w._ask = ask
+    w.on_record()
+    assert wait_until(qapp, lambda: len(w.book) == 1, 3.0)
+    assert seen == {"busy": True, "record": False, "export": False, "state": "NG の確認中"}
+
+
+def test_ng_confirm_can_be_turned_off(make_window, qapp):
+    w = _ng_window(make_window, qapp, [])
+    w.settings.confirm_ng = False
+    assert record_and_wait(w, qapp)
+    assert _ng_asked(w) == [] and w.book.get(1).judge.value == "NG_LOW"
+
+
+def test_ok_is_not_confirmed(make_window, qapp):
+    w = make_window(speed=5.0)
+    connect(w, qapp, "MOCK3")
+    w.start_lot(LOT)
+    assert wait_stable_new_battery(w, qapp)
+    assert record_and_wait(w, qapp)
+    assert _ng_asked(w) == []
+
+
+# ================================================================ 連続測定モード
+def test_continuous_mode_records_automatically(make_window, qapp, monkeypatch):
+    import battery_checker.serial_io as sio
+    from battery_checker.gui.main_window import CONTINUOUS_TEXT, MSG_DUPLICATE
+    from battery_checker.mock_serial import MockProfile
+
+    monkeypatch.setitem(sio.MOCK_PORTS, "MOCK1", ("付け外し（長め）", MockProfile(battery_cycle=(5.0, 1.0))))
+    w = make_window(speed=6.0)
+    w.settings.confirm_ng = False
+    assert not w.continuous_button.isEnabled()  # 未接続・ロットなし
+    connect(w, qapp, "MOCK1")
+    w.start_lot(LOT)
+    assert w.continuous_button.isEnabled()
+    w.continuous_button.click()
+    assert w.continuous and w.record_button.text() == CONTINUOUS_TEXT
+    assert w.continuous_button.text() == "連続測定モード：オン"
+    # キーを押さずに 5 件記録される（安定 → 記録 → 0 V → 次のバッテリが安定 → 記録 …）
+    assert wait_until(qapp, lambda: len(w.book) >= 5, 20.0), len(w.book)
+    assert [r.no for r in w.book.records][:5] == [1, 2, 3, 4, 5]
+    assert MSG_DUPLICATE not in w.asked
+    # 同じバッテリを 2 回記録していない（付け外しのたびに電圧が違う）
+    volts = [r.voltage_V for r in w.book.records]
+    assert all(a != b for a, b in zip(volts, volts[1:]))
+    # オフにすると自動で記録しない
+    w.continuous_button.click()
+    assert not w.continuous and w.record_button.text() == "● 記録（Space）"
+    n = len(w.book)
+    wait(qapp, 2.0)
+    assert len(w.book) == n
+
+
+def test_continuous_mode_waits_for_removal(make_window, qapp):
+    """繋いだままのバッテリは 1 回だけ記録し、外して 0 V になるまで次を記録しない。"""
+    w = make_window(speed=5.0)
+    connect(w, qapp, "MOCK3")
+    w.start_lot(LOT)
+    w.set_continuous(True)
+    assert wait_until(qapp, lambda: len(w.book) == 1, 5.0)
+    wait(qapp, 1.5)
+    assert len(w.book) == 1
+    assert "バッテリを外してください" in w.result_sub.text()
+
+
+def test_continuous_mode_off_on_disconnect(make_window, qapp):
+    w = make_window(speed=5.0)
+    connect(w, qapp, "MOCK3")
+    w.start_lot(LOT)
+    w.set_continuous(True)
+    assert w.continuous
+    w.disconnect_port()
+    assert not w.continuous and not w.continuous_button.isChecked()
+    assert not w.continuous_button.isEnabled()
