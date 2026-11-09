@@ -359,7 +359,7 @@ def test_export_and_end_lot(make_window, qapp, tmp_path):
     names = sorted(p.name for p in out.iterdir())
     from datetime import datetime
 
-    base = f"LOT-A12_1-2_電圧記録_{datetime.now():%Y%m%d}"
+    base = f"LOT-A12_0001-0002_電圧記録_{datetime.now():%Y%m%d}"
     assert w.export_defaults == [base]  # 初期値：ロット_番号始め-番号終わり_電圧記録_日付
     assert names == [f"{base}.csv", f"{base}.xlsx"]
     assert w.msg_label.text().startswith(f"保存しました：{out}")

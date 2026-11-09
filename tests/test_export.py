@@ -48,8 +48,8 @@ def test_ac11_csv(tmp_path):
     info, book = make_lot(30)
     book.replace(3, make_record(3, Measurement(3.3, 3.3, 3.3), 3.6, 4.2, 0.005, T))
     res = export_lot(tmp_path, info, book.records, COND, when=T)
-    assert res.base == "LOT-A12_1-30_電圧記録_20261106"  # ロット_番号始め-番号終わり_電圧記録_日付
-    assert [p.name for p in res.paths] == ["LOT-A12_1-30_電圧記録_20261106.csv", "LOT-A12_1-30_電圧記録_20261106.xlsx"]
+    assert res.base == "LOT-A12_0001-0030_電圧記録_20261106"  # ロット_番号始め-番号終わり（4 桁）_電圧記録_日付
+    assert [p.name for p in res.paths] == ["LOT-A12_0001-0030_電圧記録_20261106.csv", "LOT-A12_0001-0030_電圧記録_20261106.xlsx"]
     rows = read_csv(res.paths[0])
     assert rows[0] == ["no", "voltage_V", "judge", "min_V", "max_V", "measured_at", "remeasured", "note"]
     assert len(rows) - 1 == len(book)
@@ -124,9 +124,17 @@ def test_default_name_follows_number_range_and_date(tmp_path):
     from battery_checker.export import default_base
 
     info, book = make_lot(352, start_no=1)
-    assert default_base(info, book.records, datetime(2026, 11, 9, 8, 0)) == "LOT-A12_1-352_電圧記録_20261109"
+    assert default_base(info, book.records, datetime(2026, 11, 9, 8, 0)) == "LOT-A12_0001-0352_電圧記録_20261109"
     info2, book2 = make_lot(5, start_no=101, name="LOT B/2")
-    assert default_base(info2, book2.records, T) == "LOT_B_2_101-105_電圧記録_20261106"  # 使えない文字は _
+    assert default_base(info2, book2.records, T) == "LOT_B_2_0101-0105_電圧記録_20261106"  # 使えない文字は _
+
+
+def test_number_range_is_four_digits():
+    from battery_checker.filename import build_base_name
+
+    when = datetime(2026, 11, 9)
+    assert build_base_name("LOT-A12", 1, 100, when) == "LOT-A12_0001-0100_電圧記録_20261109"
+    assert build_base_name("LOT-A12", 9990, 10010, when) == "LOT-A12_9990-10010_電圧記録_20261109"  # 5 桁はそのまま
 
 
 def test_reexport_same_name_overwrites_others_get_suffix(tmp_path):
@@ -137,7 +145,7 @@ def test_reexport_same_name_overwrites_others_get_suffix(tmp_path):
     # 記録が増えると番号の範囲が変わるので別のファイルになる（前のファイルは残る）
     book.append(make_record(6, Measurement(3.8, 3.8, 3.8), 3.6, 4.2, 0.005, T))
     res2 = export_lot(tmp_path, info, book.records, COND, when=T)
-    assert res2.base == "LOT-A12_1-6_電圧記録_20261106" and not res2.overwritten
+    assert res2.base == "LOT-A12_0001-0006_電圧記録_20261106" and not res2.overwritten
     info.last_export_base = res2.base
     # 同じ範囲・同じ日にもう一度出力したら上書き
     book.replace(6, make_record(6, Measurement(3.9, 3.9, 3.9), 3.6, 4.2, 0.005, T))
@@ -158,7 +166,7 @@ def test_user_given_name(tmp_path):
     res = export_lot(tmp_path, info, book.records, COND, base="検査 結果:A", when=T)
     assert res.base == "検査_結果_A"
     res2 = export_lot(tmp_path, info, book.records, COND, base="   ", when=T)  # 空なら初期値
-    assert res2.base == "LOT-A12_1-3_電圧記録_20261106"
+    assert res2.base == "LOT-A12_0001-0003_電圧記録_20261106"
 
 
 def test_ac13_locked_xlsx_leaves_nothing(tmp_path, monkeypatch):
@@ -176,7 +184,7 @@ def test_ac13_locked_xlsx_leaves_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(ex.os, "replace", locked)
     with pytest.raises(ExportError) as e:
         export_lot(tmp_path, info, book.records, COND, when=T)
-    assert str(e.value) == "LOT-A12_1-5_電圧記録_20261106.xlsx に書き込めません。Excel などで開いていないか確認してください"
+    assert str(e.value) == "LOT-A12_0001-0005_電圧記録_20261106.xlsx に書き込めません。Excel などで開いていないか確認してください"
     assert list(tmp_path.iterdir()) == []
     monkeypatch.setattr(ex.os, "replace", real)
     assert len(export_lot(tmp_path, info, book.records, COND, when=T).paths) == 2
