@@ -210,7 +210,9 @@ class MainWindow(QMainWindow):
         b.setObjectName(name)
         b.setFont(ui_font(px, bold=bold))
         b.setFocusPolicy(Qt.NoFocus)  # Space／Enter は記録に使うので、ボタンにフォーカスを持たせない
-        b.clicked.connect(slot)
+        # clicked は checked（False）を渡すので、関数には渡さない。
+        # 直接つなぐと on_end_lot(confirm=False) になり、出力を聞かずにロットが終わっていた（v0.1.4〜v0.1.5）
+        b.clicked.connect(lambda _checked=False, s=slot: s())
         return b
 
     def _build_header(self) -> QFrame:

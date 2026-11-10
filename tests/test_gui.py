@@ -865,6 +865,47 @@ def test_end_cancel_or_export_cancelled_keeps_lot(make_window, qapp, tmp_path):
     assert not (tmp_path / "out").exists()
 
 
+def test_end_button_click_asks_export(make_window, qapp, tmp_path):
+    """ボタンをクリックしたときも「CSV・Excel 出力しますか？」と聞く。
+
+    以前は clicked(checked=False) が on_end_lot の confirm に入り、聞かずに終了していた（v0.1.4〜v0.1.5）。
+    """
+    w = _lot_with_records(make_window, [3.8, 3.9])
+    w.answers = ["cancel"]
+    w.end_lot_button.click()
+    assert len(w.asked) == 1 and "CSV・Excel 出力しますか？" in w.asked[0]
+    assert w.lot is not None  # キャンセルなら終了しない
+    w.answers = ["yes"]
+    w.end_lot_button.click()
+    assert w.lot is None and sorted(p.suffix for p in (tmp_path / "out").iterdir()) == [".csv", ".xlsx"]
+
+
+def test_end_button_click_without_records_confirms(make_window, qapp):
+    w = make_window()
+    w.start_lot(LOT)
+    w.answers = ["cancel"]
+    w.end_lot_button.click()
+    assert w.asked == ["ロット（LOT-A12）を終了しますか？"] and w.lot is not None
+
+
+def test_buttons_clicked_behave_like_direct_calls(make_window, qapp, tmp_path):
+    """主なボタンをクリックで押しても、確認が抜けない（クリックの引数が関数に渡らない）。"""
+    w = _lot_with_records(make_window, [3.8, 3.9])
+    # 出力：出力のあとロットを終了するか聞く
+    w.answers = ["continue"]
+    w.export_button.click()
+    assert any("終了しますか" in a for a in w.asked) and w.lot is not None
+    # 取り消す：最後の 1 件を取り消す
+    n = len(w.book)
+    w.undo_button.click()
+    assert len(w.book) == n - 1
+    # 開始：途中のロットがあれば、どうするか聞く
+    w.asked.clear()
+    w.answers = ["cancel"]
+    w.new_lot_button.click()
+    assert w.asked and w.lot is not None
+
+
 def test_end_without_records_only_confirms(make_window, qapp):
     w = make_window()
     w.start_lot(LOT)
