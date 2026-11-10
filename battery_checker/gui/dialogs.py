@@ -303,13 +303,14 @@ class LotDialog(QDialog):
         self.memo_edit.setMinimumHeight(QFontMetrics(self.memo_edit.font()).lineSpacing() * 3 + 18)
         self.memo_edit.setTabChangesFocus(True)
 
+        # 並び：ロット名 → 開始番号 → 測定者 → 電圧（下限・上限・バー） → メモ
         rows = (
             ("ロット名（必須）", self.name_edit),
+            ("開始番号", self.start_spin),
             ("測定者（社員番号）", self.operator_edit),
             ("下限 [V]（必須）", self.lower_edit),
             ("上限 [V]（必須）", self.upper_edit),
             ("", self.range_bar),
-            ("開始番号", self.start_spin),
             ("メモ", self.memo_edit),
         )
         for r, (text, w) in enumerate(rows):
@@ -318,6 +319,10 @@ class LotDialog(QDialog):
             grid.addWidget(w, r, 1)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
+        # Tab キーで移る順も、上の並びと同じにする
+        order = [w for _, w in rows]
+        for a, b in zip(order, order[1:]):
+            QWidget.setTabOrder(a, b)
 
         self.error_label = QLabel()
         self.error_label.setProperty("role", "sub")

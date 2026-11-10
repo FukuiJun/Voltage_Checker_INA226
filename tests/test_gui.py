@@ -786,3 +786,22 @@ def test_lot_dialog_range_bar_without_values(qapp):
     _drag_handle(d.range_bar, "lo", 3.5)
     assert abs(float(d.lower_edit.text()) - 3.5) <= 0.02 and d.upper_edit.text() == "4.200"  # 0〜5 V では 1 px ≒ 17 mV
     assert d.ok_button.isEnabled()
+
+
+def test_lot_dialog_field_order(qapp):
+    """並びと Tab の順：ロット名 → 開始番号 → 測定者 → 下限 → 上限 → バー → メモ。"""
+    from battery_checker.gui.dialogs import LotDialog
+
+    d = LotDialog(None, LotInput("CLC", "105619", 3.65, 4.0, 1, ""))
+    d.show()
+    qapp.processEvents()
+    expected = [d.name_edit, d.start_spin, d.operator_edit, d.lower_edit, d.upper_edit, d.range_bar, d.memo_edit]
+    ys = [w.mapTo(d, w.rect().topLeft()).y() for w in expected]
+    assert ys == sorted(ys) and len(set(ys)) == len(ys)
+    targets = {id(w) for w in expected}
+    chain, w = [], d.name_edit
+    while len(chain) < len(expected):
+        if id(w) in targets and (not chain or chain[-1] is not w):
+            chain.append(w)
+        w = w.nextInFocusChain()
+    assert chain == expected
