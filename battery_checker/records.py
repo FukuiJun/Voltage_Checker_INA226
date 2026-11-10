@@ -90,6 +90,7 @@ class Record:
     measured_at: str  # YYYY-MM-DD HH:MM:SS（PC 時刻）
     remeasured: int = 0
     note: str = ""
+    operator: str = ""  # 記録したときの測定者の社員番号（測り直しはその時の測定者）
 
     @property
     def has_warning(self) -> bool:
@@ -104,6 +105,7 @@ def make_record(
     stable_width_V: float,
     when: datetime,
     remeasured: int = 0,
+    operator: str = "",
 ) -> Record:
     return Record(
         no=no,
@@ -114,6 +116,7 @@ def make_record(
         measured_at=when.strftime(DATETIME_FMT),
         remeasured=remeasured,
         note=NOTE_SPREAD if is_spread_large(m, stable_width_V) else "",
+        operator=operator,
     )
 
 

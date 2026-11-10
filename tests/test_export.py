@@ -32,7 +32,7 @@ def make_lot(n, seed=1, start_no=1, name="LOT-A12"):
     for _ in range(n):
         v = round(rng.gauss(3.85, 0.15), 4)
         m = Measurement(v, round(v - 0.0013, 4), round(v + 0.0013, 4))
-        book.append(make_record(book.next_no, m, info.lower_V, info.upper_V, 0.005, T))
+        book.append(make_record(book.next_no, m, info.lower_V, info.upper_V, 0.005, T, operator=info.operator))
     return info, book
 
 
@@ -46,15 +46,16 @@ def read_csv(path):
 
 def test_ac11_csv(tmp_path):
     info, book = make_lot(30)
-    book.replace(3, make_record(3, Measurement(3.3, 3.3, 3.3), 3.6, 4.2, 0.005, T))
+    book.replace(3, make_record(3, Measurement(3.3, 3.3, 3.3), 3.6, 4.2, 0.005, T, operator="123456"))
     res = export_lot(tmp_path, info, book.records, COND, when=T)
     assert res.base == "LOT-A12_0001-0030_電圧記録_20261106"  # ロット_番号始め-番号終わり（4 桁）_電圧記録_日付
     assert [p.name for p in res.paths] == ["LOT-A12_0001-0030_電圧記録_20261106.csv", "LOT-A12_0001-0030_電圧記録_20261106.xlsx"]
     rows = read_csv(res.paths[0])
-    assert rows[0] == ["no", "voltage_V", "judge", "min_V", "max_V", "measured_at", "remeasured", "note"]
+    # 測り直しの回数・最小・最大は出さず、測定者（社員番号）を出す
+    assert rows[0] == ["no", "voltage_V", "judge", "measured_at", "operator_id", "note"]
     assert len(rows) - 1 == len(book)
     assert [int(r[0]) for r in rows[1:]] == list(range(1, 31))  # 番号順
-    assert rows[3] == ["3", "3.3000", "NG_LOW", "3.3000", "3.3000", "2026-11-06 14:30:05", "1", ""]
+    assert rows[3] == ["3", "3.3000", "NG_LOW", "2026-11-06 14:30:05", "123456", ""]
 
 
 def test_ac12_xlsx_contents(tmp_path):
@@ -65,8 +66,8 @@ def test_ac12_xlsx_contents(tmp_path):
 
     ws = wb[SHEET_RECORDS]
     assert ws.freeze_panes == "A2"
-    assert ws.auto_filter.ref == f"A1:H{len(book) + 1}"
-    assert [c.value for c in ws[1]] == ["No", "電圧 [V]", "判定", "最小 [V]", "最大 [V]", "記録日時", "測り直し", "備考"]
+    assert ws.auto_filter.ref == f"A1:F{len(book) + 1}"
+    assert [c.value for c in ws[1]] == ["No", "電圧 [V]", "判定", "記録日時", "測定者（社員番号）", "備考"]
     assert ws["A1"].font.bold and ws["A1"].fill.fgColor.rgb.endswith("2B2A28")
     assert ws.max_row == len(book) + 1
     ng_rows = [r for r in book.records if r.judge is not Judge.OK]
@@ -75,6 +76,7 @@ def test_ac12_xlsx_contents(tmp_path):
         row = r.no + 1
         assert ws.cell(row=row, column=2).value == r.voltage_V
         assert ws.cell(row=row, column=2).number_format == "0.0000"
+        assert ws.cell(row=row, column=5).value == "123456" and ws.cell(row=row, column=5).number_format == "@"
         fill = ws.cell(row=row, column=3).fill.fgColor.rgb
         if r.judge is Judge.OK:
             assert ws.cell(row=row, column=3).value == "OK" and not fill.endswith("A3282C")
@@ -111,6 +113,22 @@ def test_ac12_xlsx_contents(tmp_path):
     assert cond["スケッチの版"] == "fw=2" and cond["送信周期"] == "40 ms"
     assert cond["記録方法"] == "5 回測定の中央値" and cond["COM ポート"] == "COM7"
     assert cond["ソフトウェア"].startswith("INA226_BatteryChecker v")
+
+
+def test_operator_per_record(tmp_path):
+    """測定者は記録ごと。途中で交代したら集計に両方、先頭の 0 も残す。"""
+    info, book = make_lot(4)
+    info.operator = "012345"  # ロット設定で交代
+    for _ in range(2):
+        m = Measurement(3.9, 3.9, 3.9)
+        book.append(make_record(book.next_no, m, info.lower_V, info.upper_V, 0.005, T, operator=info.operator))
+    res = export_lot(tmp_path, info, book.records, COND, when=T)
+    rows = read_csv(res.paths[0])[1:]
+    assert [r[4] for r in rows] == ["123456"] * 4 + ["012345"] * 2
+    wb = openpyxl.load_workbook(res.paths[1])
+    assert wb[SHEET_RECORDS]["E6"].value == "012345"  # 文字列のまま（0 が消えない）
+    summary = {r[0].value: r[1].value for r in wb[SHEET_SUMMARY].iter_rows(min_row=2, max_col=2) if r[0].value}
+    assert summary["測定者（社員番号）"] == "123456、012345"
 
 
 def test_unknown_firmware(tmp_path):

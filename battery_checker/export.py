@@ -1,6 +1,6 @@
 """出力：CSV と Excel（.xlsx）（仕様 F-09, 5.2）。GUI なしでテストできる。
 
-- CSV：作業ファイルと同じ列。UTF-8（BOM 付き）・CRLF
+- CSV：番号・電圧・判定・記録日時・測定者（社員番号）・備考。UTF-8（BOM 付き）・CRLF
 - xlsx：「記録」「集計」「条件」の 3 シート（openpyxl）
 
 両方を一時ファイルに書いてから置き換える。どちらかが書けなければ、今回書いた方も消して
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import APP_NAME, __version__
-from .csvformat import CSV_ENCODING, format_csv
+from .csvformat import CSV_ENCODING, format_export_csv
 from .filename import OUTPUT_EXTENSIONS, build_base_name, sanitize, unique_base_name
 from .records import (
     SAMPLES_PER_RECORD,
@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 SHEET_RECORDS = "記録"
 SHEET_SUMMARY = "集計"
 SHEET_CONDITIONS = "条件"
-RECORD_HEADERS = ("No", "電圧 [V]", "判定", "最小 [V]", "最大 [V]", "記録日時", "測り直し", "備考")
+RECORD_HEADERS = ("No", "電圧 [V]", "判定", "記録日時", "測定者（社員番号）", "備考")
 METHOD_TEXT = f"{SAMPLES_PER_RECORD} 回測定の中央値"
 
 
@@ -106,7 +106,7 @@ def _same_dir(a: str, b: Path) -> bool:
 # ================================================================ CSV
 def write_csv(path: Path, records: Sequence[Record]) -> None:
     with open(path, "w", encoding=CSV_ENCODING, newline="") as f:
-        f.write(format_csv(sorted(records, key=lambda r: r.no)))
+        f.write(format_export_csv(sorted(records, key=lambda r: r.no)))
 
 
 # ================================================================ xlsx
@@ -136,10 +136,20 @@ def _fit_columns(ws, min_width: int = 6, max_width: int = 60) -> None:
         ws.column_dimensions[get_column_letter(col)].width = max(min_width, min(max_width, w + 2))
 
 
+def operators_text(info: LotInfo, records: Sequence[Record]) -> str:
+    """集計の測定者：記録に出てくる社員番号を出てきた順に（記録がなければロットの社員番号）。"""
+    seen: list[str] = []
+    for r in records:
+        if r.operator and r.operator not in seen:
+            seen.append(r.operator)
+    return "、".join(seen) if seen else info.operator
+
+
 def build_workbook(info: LotInfo, records: Sequence[Record], cond: Conditions):
     from openpyxl import Workbook
     from openpyxl.chart import BarChart, Reference
     from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
 
     header_fill = PatternFill("solid", fgColor=XLSX_COLORS["header_bg"])
     header_font = Font(bold=True, color=XLSX_COLORS["header_text"])
@@ -159,17 +169,17 @@ def build_workbook(info: LotInfo, records: Sequence[Record], cond: Conditions):
         c.font = header_font
         c.alignment = Alignment(horizontal="center", vertical="center")
     for r in records:
-        ws.append([r.no, r.voltage_V, r.judge.label, r.min_V, r.max_V, r.measured_at, r.remeasured, r.note])
+        ws.append([r.no, r.voltage_V, r.judge.label, r.measured_at, r.operator, r.note])
     for row in ws.iter_rows(min_row=2, max_row=len(records) + 1):
-        no_c, v_c, j_c, mn_c, mx_c = row[:5]
-        for c in (v_c, mn_c, mx_c):
-            c.number_format = "0.0000"
+        no_c, v_c, j_c, at_c, op_c = row[:5]
+        v_c.number_format = "0.0000"
+        op_c.number_format = "@"  # 社員番号は文字列（先頭の 0 を残す）
         j_c.alignment = Alignment(horizontal="center")
         if j_c.value != Judge.OK.label:
             j_c.fill = ng_fill
             j_c.font = ng_font
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:H{len(records) + 1}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(RECORD_HEADERS))}{len(records) + 1}"
     _fit_columns(ws)
 
     # ---- 集計
@@ -181,7 +191,7 @@ def build_workbook(info: LotInfo, records: Sequence[Record], cond: Conditions):
 
     rows = [
         ("ロット名", info.lot_name),
-        ("測定者（社員番号）", info.operator),
+        ("測定者（社員番号）", operators_text(info, records)),
         ("開始日時", info.started_at),
         ("終了日時", end_text),
         ("下限 [V]", info.lower_V),

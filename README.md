@@ -92,8 +92,10 @@ INA226_Monitor v1.2.1 と同じスケッチなので、書き込み済みなら�
 | 設定（前回値） | `%APPDATA%\INA226_BatteryChecker\settings.json` |
 | ログ（エラー・警告） | `%APPDATA%\INA226_BatteryChecker\app.log`（最大 1 MB × 3 世代） |
 
-- CSV：UTF-8（BOM 付き）・CRLF。列は `no,voltage_V,judge,min_V,max_V,measured_at,remeasured,note`（番号順）
-- xlsx：「記録」（NG の判定セルは赤、1 行目固定、オートフィルタ）、「集計」（件数・OK/NG 数・OK 率・平均・中央値・最小・最大・標準偏差、
+- CSV：UTF-8（BOM 付き）・CRLF。列は `no,voltage_V,judge,measured_at,operator_id,note`（番号順）。
+  `operator_id` は記録したときの測定者の社員番号です（「ロット設定…」で交代すると、以後の記録から変わります）
+- 作業ファイルの CSV は、このほかに最小・最大・測り直し回数も持っています（再開と画面表示のため。出力には出しません）
+- xlsx：「記録」（No・電圧・判定・記録日時・測定者（社員番号）・備考。NG の判定セルは赤、1 行目固定、オートフィルタ）、「集計」（測定者・件数・OK/NG 数・OK 率・平均・中央値・最小・最大・標準偏差、
   10 mV 刻みの度数分布表と棒グラフ）、「条件」（ソフトの版・スケッチの版・送信周期・記録方法・COM ポート・メモ）の 3 シート
 - 管理者権限は不要です（レジストリ・Program Files には書きません）
 

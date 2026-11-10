@@ -834,14 +834,14 @@ class MainWindow(QMainWindow):
         width = self.settings.stable_width_mV / 1000
         if self.remeasure_no is not None and book.get(self.remeasure_no) is not None:
             no = self.remeasure_no
-            rec = book.replace(no, make_record(no, m, lot.lower_V, lot.upper_V, width, when))
+            rec = book.replace(no, make_record(no, m, lot.lower_V, lot.upper_V, width, when, operator=lot.operator))
             self.remeasure_no = None
             self.table.model.changed(no)
             appended = False
             sub = f"測り直しました（{rec.remeasured} 回目）"
         else:
             self.remeasure_no = None
-            rec = book.append(make_record(book.next_no, m, lot.lower_V, lot.upper_V, width, when))
+            rec = book.append(make_record(book.next_no, m, lot.lower_V, lot.upper_V, width, when, operator=lot.operator))
             self.table.model.appended()
             appended = True
             sub = ""

@@ -21,11 +21,20 @@ import queue
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .csvformat import CSV_ENCODING, CSV_HEADER, KNOWN_NOTES, NEWLINE, format_csv, format_row, parse_row
+from .csvformat import (
+    CSV_ENCODING,
+    CSV_HEADER,
+    KNOWN_NOTES,
+    LEGACY_CSV_HEADER,
+    NEWLINE,
+    format_csv,
+    format_row,
+    parse_row,
+)
 from .filename import stamp
 from .records import DATETIME_FMT, LotInfo, LotState, Record, RecordBook
 
@@ -226,6 +235,7 @@ def read_records(csv_path: Path, start_no: int) -> tuple[list[Record], int | Non
     最終行が途中で切れていたら除く（番号が読めなければ次の番号とみなす）。
     改行で終わっていない最終行は、形式が正しくても備考が途中で切れている場合があるので、備考も確かめる。
     途中の行が壊れていた場合は、そこまでの連続した記録だけを使う。
+    v0.1.5 までの形式（測定者の列なし）も読める（測定者は空になる）。
     """
     raw = Path(csv_path).read_bytes()
     text = raw.decode("utf-8", errors="replace")
@@ -234,8 +244,10 @@ def read_records(csv_path: Path, start_no: int) -> tuple[list[Record], int | Non
     ends_with_newline = text.endswith("\n")
     lines = text.splitlines()
     warnings: list[str] = []
-    if not lines or lines[0].strip() != CSV_HEADER:
+    header = lines[0].strip() if lines else ""
+    if header not in (CSV_HEADER, LEGACY_CSV_HEADER):
         raise ValueError(f"作業ファイルの列名行が違います: {csv_path}")
+    legacy = header == LEGACY_CSV_HEADER
     body = [ln for ln in lines[1:]]
     while body and not body[-1].strip():
         body.pop()
@@ -243,7 +255,7 @@ def read_records(csv_path: Path, start_no: int) -> tuple[list[Record], int | Non
     dropped_no: int | None = None
     for i, line in enumerate(body):
         is_last = i == len(body) - 1
-        rec = parse_row(line)
+        rec = parse_row(line, legacy=legacy)
         if is_last and rec is not None and not ends_with_newline and rec.note not in KNOWN_NOTES:
             rec = None
         if rec is None:
@@ -270,15 +282,28 @@ def read_records(csv_path: Path, start_no: int) -> tuple[list[Record], int | Non
     return ok, dropped_no, warnings
 
 
+def is_legacy_file(csv_path: Path) -> bool:
+    """v0.1.5 までの形式（測定者の列なし）の作業ファイルか。"""
+    try:
+        with open(csv_path, encoding=CSV_ENCODING, newline="") as f:
+            return f.readline().strip() == LEGACY_CSV_HEADER
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def load_lot(entry: LotEntry) -> tuple[LotState, WorkFile]:
     """ロットを作業ファイルから戻す（F-08）。直した場合は作業ファイルも書き直す。"""
     info = entry.info
     records, dropped, warnings = read_records(entry.csv_path, info.start_no)
+    legacy = is_legacy_file(entry.csv_path)
+    if legacy:  # v0.1.5 までの作業ファイル：測定者はロットの社員番号とみなす
+        records = [replace(r, operator=info.operator) for r in records]
     book = RecordBook(info.start_no, records)
     wf = WorkFile(entry.csv_path.parent, entry.lot_id)
-    if dropped is not None or warnings:
+    if dropped is not None or warnings or legacy:
         info.revision += 1
-        wf.save(info, book)  # 壊れた行を除いた内容で書き直す
+        # 壊れた行を除いた内容・新しい形式で書き直す（旧形式のファイルに新形式の行を足さないため）
+        wf.save(info, book)
     wf.last_saved = entry.csv_path.stat().st_mtime if entry.csv_path.exists() else None
     return LotState(info, book, dropped, warnings), wf
 

@@ -195,3 +195,39 @@ def test_save_async_keeps_order_and_rewrites_after_failure(tmp_path, monkeypatch
     assert find_unfinished(tmp_path) == []
     assert [r.no for r in read_records(wf.csv_path, 1)[0]] == [1, 2, 3, 4]
     wf.close()
+
+
+def test_operator_round_trip_and_truncated_operator(tmp_path):
+    """測定者（社員番号）も保存して戻る。測定者の途中で切れた最終行は除く。"""
+    info, book, wf = new_lot(tmp_path)
+    for v, op in ((3.81, "123456"), (3.82, "012345")):
+        book.append(make_record(book.next_no, Measurement(v, v, v), 3.6, 4.2, 0.005, T, operator=op))
+        assert wf.save(info, book, appended=True)
+    records, dropped, _ = read_records(wf.csv_path, 1)
+    assert [r.operator for r in records] == ["123456", "012345"] and dropped is None
+    data = wf.csv_path.read_bytes()
+    assert data.endswith(b",012345,\r\n")
+    wf.csv_path.write_bytes(data[: -len(b"345,\r\n")])  # 「012」で切れた
+    records, dropped, _ = read_records(wf.csv_path, 1)
+    assert [r.no for r in records] == [1] and dropped == 2
+
+
+def test_resume_legacy_workfile(tmp_path):
+    """v0.1.5 までの作業ファイル（測定者の列なし）から再開でき、新しい形式に書き直す。"""
+    from battery_checker.csvformat import LEGACY_CSV_HEADER
+
+    info, book, wf = new_lot(tmp_path)
+    wf.csv_path.write_bytes(
+        ("﻿" + LEGACY_CSV_HEADER + "\r\n"
+         "1,3.8100,OK,3.8090,3.8110,2026-11-06 14:30:00,0,\r\n"
+         "2,3.8200,OK,3.8150,3.8250,2026-11-06 14:30:05,1,ばらつき大\r\n").encode("utf-8")
+    )
+    state, wf2 = load_lot(find_unfinished(tmp_path)[0])
+    assert [(r.no, r.remeasured, r.note, r.operator) for r in state.book.records] == [
+        (1, 0, "", "123456"), (2, 1, "ばらつき大", "123456")]
+    assert wf2.csv_path.read_bytes().startswith(b"\xef\xbb\xbf" + CSV_HEADER.encode() + b"\r\n")
+    # 続けて記録しても、新しい形式で読める
+    state.book.append(make_record(3, Measurement(3.83, 3.83, 3.83), 3.6, 4.2, 0.005, T, operator="123456"))
+    assert wf2.save(state.info, state.book, appended=True)
+    records, dropped, warnings = read_records(wf2.csv_path, 1)
+    assert [r.no for r in records] == [1, 2, 3] and dropped is None and not warnings

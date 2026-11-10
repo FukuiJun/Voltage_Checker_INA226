@@ -457,6 +457,20 @@ def test_lot_dialog_validation(qapp):
 
 
 # ================================================================ グラフの線をドラッグして上下限を変える
+def test_operator_recorded_per_record(make_window, qapp):
+    """記録ごとに、そのときの測定者（社員番号）を残す。ロット設定で交代したら以後の記録だけ変わる。"""
+    w = make_window(speed=5.0)
+    w.settings.confirm_duplicate = False
+    w.settings.confirm_ng = False
+    connect(w, qapp, "MOCK3")
+    w.start_lot(LOT)
+    assert wait_stable_new_battery(w, qapp)
+    assert record_and_wait(w, qapp)
+    w.apply_lot_settings(LotInput(w.lot.lot_name, "012345", w.lot.lower_V, w.lot.upper_V, 1, ""))
+    assert record_and_wait(w, qapp)
+    assert [r.operator for r in w.book.records] == [LOT.operator, "012345"]
+
+
 def _lot_with_records(make_window, volts):
     from datetime import datetime
 
