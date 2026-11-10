@@ -86,7 +86,7 @@ def _set_invalid(w, invalid: bool) -> None:
 class LimitRangeBar(QWidget):
     """下限・上限を 1 本のバーの 2 つのつまみで調整する（F-02）。
 
-    - 左のつまみ＝下限、右のつまみ＝上限。つまみの間（OK の範囲）は緑、外側（NG）は薄い赤
+    - 左のつまみ＝下限、右のつまみ＝上限。バーは薄いベージュ、つまみの間（OK の範囲）は濃い朽葉色
     - ドラッグは 0.01 V 刻み。矢印キーで最後に触ったつまみを 0.001 V（Shift で 0.01 V）ずつ動かす
     - バーの範囲は下限・上限の前後 0.5 V 以上（0.5 V 単位。例 3.600〜4.200 V → 3.0〜5.0 V）。
       つまみを端まで動かして離すと、範囲を広げる（さらに先へ動かせる）。値が無いときは 0〜5 V
@@ -101,7 +101,7 @@ class LimitRangeBar(QWidget):
     DEFAULT_RANGE = (0.0, 5.0)
     PAD_V = 0.5
     MARGIN_PX = 14  # つまみが端で切れないよう、バーの両端に空ける幅
-    HANDLE_R = 10
+    HANDLE_R = 9
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -112,7 +112,7 @@ class LimitRangeBar(QWidget):
         self._drag: str | None = None
         self._active = "lo"
         self.setFocusPolicy(Qt.StrongFocus)
-        self.setMinimumHeight(54)
+        self.setFixedHeight(54)  # ダイアログを縦に広げても、バーの行は広げない
         self.setToolTip("つまみをドラッグして下限・上限を変えます（矢印キーで 0.001 V、Shift＋矢印で 0.01 V）")
 
     # ---- 値
@@ -149,7 +149,7 @@ class LimitRangeBar(QWidget):
     # ---- 座標
     def _track(self) -> QRectF:
         r = self.contentsRect()
-        return QRectF(r.left() + self.MARGIN_PX, r.top() + 14, r.width() - 2 * self.MARGIN_PX, 8)
+        return QRectF(r.left() + self.MARGIN_PX, r.top() + 15, r.width() - 2 * self.MARGIN_PX, 6)
 
     def _x_of(self, v: float) -> float:
         t = self._track()
@@ -174,11 +174,11 @@ class LimitRangeBar(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         t = self._track()
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(COLORS["ng_bg"]).lighter(185))  # 外側（NG）
-        p.drawRoundedRect(t, 4, 4)
+        p.setBrush(QColor(COLORS["divider"]))  # バー全体：薄いベージュ
+        p.drawRoundedRect(t, 3, 3)
         x_lo, x_hi = self._x_of(self._lo), self._x_of(self._hi)
         if self._has_values:
-            p.setBrush(QColor(COLORS["ok_bg"]))  # 間（OK）
+            p.setBrush(QColor(COLORS["badge_bg"]))  # つまみの間（OK の範囲）：濃い朽葉色
             p.drawRect(QRectF(x_lo, t.top(), max(x_hi - x_lo, 1.0), t.height()))
         # 目盛り（範囲に合わせて 0.5 / 1 / 5 V ごと）
         p.setFont(mono_font(11))
@@ -195,14 +195,21 @@ class LimitRangeBar(QWidget):
             x = self._x_of(v)
             p.drawLine(QPointF(x, t.bottom() + 2), QPointF(x, t.bottom() + 6))
             label = f"{v:g}" + (" V" if i == len(ticks) - 1 else "")
-            p.drawText(QPointF(x - fm.horizontalAdvance(label) / 2, t.bottom() + 6 + fm.ascent()), label)
+            w = fm.horizontalAdvance(label)
+            # 両端の文字が部品の外にはみ出さないよう、内側に寄せる
+            lx = min(max(x - w / 2, self.contentsRect().left()), self.contentsRect().right() - w)
+            p.drawText(QPointF(lx, t.bottom() + 6 + fm.ascent()), label)
         # つまみ
         for which in ("lo", "hi"):
             c = self.handle_center(which)
-            fill = QColor(COLORS["record_bg"]) if self._has_values else QColor(COLORS["readonly_bg"])
-            ring = QColor(COLORS["text"]) if (self.hasFocus() and which == self._active) else QColor(COLORS["input_border"])
-            p.setPen(QPen(ring, 2))
-            p.setBrush(fill)
+            # つまみ：クリーム色に朽葉色の縁。いま操作しているつまみは縁を濃く
+            active = self.hasFocus() and which == self._active
+            if self._has_values:
+                ring = QColor(COLORS["text"]) if active else QColor(COLORS["badge_bg"])
+            else:
+                ring = QColor(COLORS["input_border"])
+            p.setPen(QPen(ring, 2.5))
+            p.setBrush(QColor(COLORS["input_bg"]))
             p.drawEllipse(c, self.HANDLE_R, self.HANDLE_R)
         p.end()
 
@@ -293,7 +300,7 @@ class LotDialog(QDialog):
         self.start_spin.setEnabled(not editing)
         self.memo_edit = QPlainTextEdit(initial.memo)
         self.memo_edit.setFont(ui_font(14))
-        self.memo_edit.setFixedHeight(QFontMetrics(self.memo_edit.font()).lineSpacing() * 3 + 18)
+        self.memo_edit.setMinimumHeight(QFontMetrics(self.memo_edit.font()).lineSpacing() * 3 + 18)
         self.memo_edit.setTabChangesFocus(True)
 
         rows = (
