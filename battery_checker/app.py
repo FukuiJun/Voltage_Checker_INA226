@@ -23,8 +23,10 @@ def main(argv: list[str] | None = None) -> int:
 
     paths = AppPaths.default()
     setup_logging(paths.log_file)
-    if sys.platform == "win32":
-        # タスクバーに Python ではなくこのアプリのアイコンを出す
+    if sys.platform == "win32" and not getattr(sys, "frozen", False):
+        # Python から起動したとき（開発時）だけ：タスクバーに Python ではなくこのアプリのアイコンを出す。
+        # exe では付けない。付けると Windows がこの ID と exe のアイコンを結び付けられず、
+        # タスクバーに既定のアイコンが出ることがある（exe なら exe に埋め込んだアイコンがそのまま使われる）
         try:
             import ctypes
 
