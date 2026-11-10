@@ -159,3 +159,39 @@ def test_create_fails_when_folder_cannot_be_made(tmp_path):
     ro.write_text("ファイルなのでフォルダを作れない", encoding="utf-8")
     with pytest.raises(OSError):
         new_lot(ro / "lots")
+
+
+def test_save_async_keeps_order_and_rewrites_after_failure(tmp_path, monkeypatch):
+    """別スレッドでの保存：頼んだ順に書き、失敗したら次の保存で全件を書き直す。"""
+    import battery_checker.workfile as wfmod
+
+    info, book, wf = new_lot(tmp_path)
+    results = []
+    wf.on_saved = lambda ok, err: results.append(ok)
+    for v in (3.81, 3.82, 3.83):
+        book.append(make_record(book.next_no, Measurement(v, v, v), 3.6, 4.2, 0.005, T))
+        wf.save_async(info, book, appended=True)
+    assert wf.flush()
+    assert results == [True, True, True]
+    assert [r.voltage_V for r in read_records(wf.csv_path, 1)[0]] == [3.81, 3.82, 3.83]
+    real = wfmod._fsync_write
+
+    def broken(*a, **k):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(wfmod, "_fsync_write", broken)
+    book.append(make_record(4, Measurement(3.84, 3.84, 3.84), 3.6, 4.2, 0.005, T))
+    wf.save_async(info, book, appended=True)
+    assert wf.flush() and results[-1] is False and wf.dirty
+    monkeypatch.setattr(wfmod, "_fsync_write", real)
+    book.append(make_record(5, Measurement(3.85, 3.85, 3.85), 3.6, 4.2, 0.005, T))
+    wf.save_async(info, book, appended=True)
+    assert wf.flush() and results[-1] is True and not wf.dirty
+    assert [r.no for r in read_records(wf.csv_path, 1)[0]] == [1, 2, 3, 4, 5]
+    # 終了の前に残りを書いてから、ロット情報を書き換える（古い書き込みが上書きしない）
+    book.undo_last()
+    wf.save_async(info, book)
+    finish_lot(wf, info, when=T)
+    assert find_unfinished(tmp_path) == []
+    assert [r.no for r in read_records(wf.csv_path, 1)[0]] == [1, 2, 3, 4]
+    wf.close()

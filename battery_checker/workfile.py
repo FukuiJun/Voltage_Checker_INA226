@@ -8,6 +8,8 @@
 - 追記・書き直しのたびにファイルを閉じ、flush と fsync で OS のキャッシュに残さない
 - 書き直し（取り消し・測り直し・判定のやり直し）は一時ファイルに書いてから置き換える
 - 書けなかったときは dirty にし、次の保存で全件を書き直す（F-04 の異常時）
+- 画面からは save_async() で頼む：書き込みは専用のスレッドが順番に行い、画面を待たせない
+  （ディスクの flush が遅いときでも記録の結果はすぐ出る）。終了・ロット情報の書き換えの前は flush() で待つ
 """
 
 from __future__ import annotations
@@ -15,7 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -55,6 +60,15 @@ def new_lot_id(lots_dir: Path, when: datetime) -> str:
     return lot_id
 
 
+@dataclass(frozen=True)
+class _SaveJob:
+    """1 回分の保存。画面のスレッドで作った写し（書き込み中に記録が変わっても影響しない）。"""
+
+    row: bytes | None  # 最後の 1 件の行（追記のとき）
+    full_csv: bytes  # 全件（追記できないとき・書き直しのとき）
+    info: bytes  # ロット情報（JSON）
+
+
 class WorkFile:
     def __init__(self, lots_dir: Path, lot_id: str) -> None:
         self.lots_dir = Path(lots_dir)
@@ -63,6 +77,10 @@ class WorkFile:
         self.dirty = False  # 前回の保存に失敗した（次は全件を書き直す）
         self.last_saved: float | None = None  # 最後に保存できた時刻（time.time()）
         self.last_error: OSError | None = None
+        # 書き込みの結果を知らせる（書き込みのスレッドから呼ばれる）：(書けたか, 誤りの文)
+        self.on_saved: Callable[[bool, str], None] | None = None
+        self._queue: queue.Queue[_SaveJob | None] = queue.Queue()
+        self._thread: threading.Thread | None = None
 
     # ---------------------------------------------------------------- 作成
     @classmethod
@@ -77,19 +95,18 @@ class WorkFile:
         return wf
 
     # ---------------------------------------------------------------- 保存
-    def save(self, info: LotInfo, book: RecordBook, appended: bool = False) -> bool:
-        """記録・取り消し・測り直しのあとに呼ぶ。
+    @staticmethod
+    def _job(info: LotInfo, book: RecordBook, appended: bool) -> _SaveJob:
+        row = (format_row(book.last) + NEWLINE).encode("utf-8") if appended and book.last is not None else None
+        return _SaveJob(row, format_csv(book.records).encode(CSV_ENCODING), _info_bytes(info))
 
-        appended=True（最後に 1 件足しただけ）なら 1 行追記、それ以外は全件を書き直す。
-        前回失敗していれば全件を書き直す。書けたら True。
-        """
+    def _write(self, job: _SaveJob) -> bool:
         try:
-            if appended and not self.dirty and book.last is not None and self.csv_path.exists():
-                line = format_row(book.last) + NEWLINE
-                _fsync_write(self.csv_path, line.encode("utf-8"), mode="ab")
+            if job.row is not None and not self.dirty and self.csv_path.exists():
+                _fsync_write(self.csv_path, job.row, mode="ab")
             else:
-                _atomic_write(self.csv_path, format_csv(book.records).encode(CSV_ENCODING))
-            _atomic_write(self.json_path, _info_bytes(info))
+                _atomic_write(self.csv_path, job.full_csv)
+            _atomic_write(self.json_path, job.info)
         except OSError as e:
             log.warning("作業ファイルに書き込めません: %s", self.csv_path, exc_info=True)
             self.dirty = True
@@ -100,7 +117,60 @@ class WorkFile:
         self.last_saved = time.time()
         return True
 
+    def save(self, info: LotInfo, book: RecordBook, appended: bool = False) -> bool:
+        """すぐに書く（書き終わるまで待つ）。書けたら True。
+
+        appended=True（最後に 1 件足しただけ）なら 1 行追記、それ以外は全件を書き直す。
+        前回失敗していれば全件を書き直す。
+        """
+        self.flush()
+        return self._write(self._job(info, book, appended))
+
+    def save_async(self, info: LotInfo, book: RecordBook, appended: bool = False) -> None:
+        """書き込みのスレッドに頼んで、すぐ戻る（順番は頼んだ順）。結果は on_saved で知らせる。"""
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._run, name=f"workfile-{self.lot_id}", daemon=True)
+            self._thread.start()
+        self._queue.put(self._job(info, book, appended))
+
+    def _run(self) -> None:
+        while True:
+            job = self._queue.get()
+            try:
+                if job is None:
+                    return
+                ok = self._write(job)
+                cb = self.on_saved
+                if cb is not None:
+                    try:
+                        cb(ok, str(self.last_error) if not ok else "")
+                    except Exception:
+                        log.warning("保存の結果を知らせられません", exc_info=True)
+            finally:
+                self._queue.task_done()
+
+    def flush(self, timeout: float = 10.0) -> bool:
+        """頼んだ書き込みが全部終わるまで待つ。終わったら True。"""
+        if self._thread is None:
+            return True
+        end = time.monotonic() + timeout
+        while self._queue.unfinished_tasks:
+            if time.monotonic() > end:
+                log.warning("作業ファイルの書き込みが終わりません（%s）", self.csv_path)
+                return False
+            time.sleep(0.005)
+        return True
+
+    def close(self) -> None:
+        """残りを書いてから、書き込みのスレッドを止める（アプリの終了・ロットを閉じるとき）。"""
+        self.flush()
+        if self._thread is not None and self._thread.is_alive():
+            self._queue.put(None)
+            self._thread.join(2.0)
+        self._thread = None
+
     def save_info(self, info: LotInfo) -> bool:
+        self.flush()  # 先に頼んだ書き込みが、あとからロット情報を上書きしないように
         try:
             _atomic_write(self.json_path, _info_bytes(info))
         except OSError as e:

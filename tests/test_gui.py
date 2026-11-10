@@ -201,6 +201,7 @@ def test_ac15_space_records_20_in_a_row(make_window, qapp, monkeypatch):
     # 作業ファイルにも 20 件
     from battery_checker.workfile import read_records
 
+    assert w.workfile.flush()  # 作業ファイルは別スレッドで書くので、書き終わるのを待つ
     assert len(read_records(w.workfile.csv_path, 1)[0]) == 20
 
 
@@ -279,6 +280,7 @@ def test_undo_and_remeasure(make_window, qapp):
     assert w.remeasure_no is None
     from battery_checker.workfile import read_records
 
+    assert w.workfile.flush()
     recs = read_records(w.workfile.csv_path, 1)[0]
     assert [(r.no, r.remeasured) for r in recs] == [(1, 1), (2, 0)]
 
@@ -299,10 +301,14 @@ def test_workfile_error_keeps_record_and_shows_red(make_window, qapp, monkeypatc
 
     monkeypatch.setattr(wfmod, "_fsync_write", broken)
     assert record_and_wait(w, qapp)
-    assert w.msg_label.text().startswith(MSG_WORKFILE_ERROR) and w.msg_label.property("error")
+    assert len(w.book) == 1  # 画面上の記録は残る
+    # 書き込みは別スレッド：失敗の知らせが届いたら赤字になる
+    assert wait_until(qapp, lambda: w.msg_label.text().startswith(MSG_WORKFILE_ERROR), 3.0)
+    assert w.msg_label.property("error")
     assert w.workfile.dirty and "（未保存あり）" in w.saved_label.text()
     monkeypatch.setattr(wfmod, "_fsync_write", real)
     assert record_and_wait(w, qapp)  # 次の記録で全件を書き直す
+    assert w.workfile.flush()
     assert not w.workfile.dirty
     from battery_checker.workfile import read_records
 
@@ -501,6 +507,7 @@ def test_drag_upper_limit_rejudges_after_confirm(make_window, qapp):
     assert w.lot_label.text() == "LOT-A12 ／ 下限 3.600 V・上限 4.000 V"
     assert w.plot.upper_line.label.textItem.toPlainText() == "上限 4.000 V"
     assert (w.settings.lower_V, w.settings.upper_V) == (3.6, 4.0)  # 次のロットの初期値
+    assert w.workfile.flush()
     recs = read_records(w.workfile.csv_path, 1)[0]
     assert [r.judge.value for r in recs] == ["OK", "OK", "NG_HIGH", "NG_HIGH"]
 
@@ -850,3 +857,27 @@ def test_end_without_records_only_confirms(make_window, qapp):
     w.answers = ["end"]
     assert w.on_end_lot()
     assert w.asked == ["ロット（LOT-A12）を終了しますか？"] and w.lot is None
+
+
+def test_record_does_not_wait_for_slow_disk(make_window, qapp, monkeypatch):
+    """作業ファイルの書き込みが遅くても（0.8 秒）、記録の結果はすぐ出る。書き込みはあとで終わる。"""
+    import battery_checker.workfile as wfmod
+
+    w = make_window(speed=5.0)
+    w.settings.confirm_duplicate = False
+    connect(w, qapp, "MOCK3")
+    w.start_lot(LOT)
+    assert wait_stable_new_battery(w, qapp)
+    real = wfmod._fsync_write
+
+    def slow(*a, **k):
+        time.sleep(0.8)
+        return real(*a, **k)
+
+    monkeypatch.setattr(wfmod, "_fsync_write", slow)
+    assert record_and_wait(w, qapp)
+    assert w.last_latency_s < 0.5, (w.last_latency_s, w.last_save_s)
+    assert w.workfile.flush(5.0)
+    from battery_checker.workfile import read_records
+
+    assert len(read_records(w.workfile.csv_path, 1)[0]) == 1

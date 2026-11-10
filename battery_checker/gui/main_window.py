@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -93,6 +93,12 @@ _TEXT_INPUTS = (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox)
 _RECORD_KEYS = (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter)
 
 
+class _SaveSignals(QObject):
+    """作業ファイルの書き込みのスレッドから、画面のスレッドへ結果を渡す。"""
+
+    done = Signal(bool, str)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, paths: AppPaths, mock: bool = False, mock_speed: float = 1.0) -> None:
         super().__init__()
@@ -122,7 +128,9 @@ class MainWindow(QMainWindow):
         self._pressed_mono = 0.0
         self.last_latency_s: float | None = None  # 記録ボタンから結果表示まで（AC-15 の確認用）
         self.last_collect_s: float | None = None  # そのうち 5 個を集めるのにかかった時間
-        self.last_save_s: float | None = None  # そのうち作業ファイルの保存にかかった時間
+        self.last_save_s: float | None = None  # そのうち作業ファイルの保存を頼むのにかかった時間（書き込みは別スレッド）
+        self._save_signals = _SaveSignals()
+        self._save_signals.done.connect(self._on_workfile_saved)
         self.remeasure_no: int | None = None
         # ロット
         self.lot: LotInfo | None = None
@@ -842,21 +850,20 @@ class MainWindow(QMainWindow):
         lot.interval_ms = self.effective_interval_ms()
         lot.firmware = self.firmware_version
         self.last_collect_s = time.monotonic() - self._pressed_mono
+        # 作業ファイルへの保存は書き込みのスレッドに頼む（ディスクが遅くても画面を待たせない）。
+        # 書けなかったときは _on_workfile_saved が赤字で知らせる
         t_save = time.monotonic()
-        saved = self.workfile.save(lot, book, appended=appended)
+        self.workfile.save_async(lot, book, appended=appended)
         self.last_save_s = time.monotonic() - t_save
         self.monitor.mark_recorded()
         self.table.select_no(rec.no)
         self._refresh_records()
-        if saved:
-            warn = f"　⚠ {rec.note}" if rec.note else ""
-            msg = f"No.{rec.no}：{sub}" if sub else f"No.{rec.no} を記録しました"
-            msg += f"（{rec.voltage_V:.4f} V　{rec.judge.label}）{warn}"
-            if self.continuous and not sub:
-                msg += "　バッテリを外してください"
-            self.set_message(msg, error=not rec.judge.is_ok)  # NG は赤字
-        else:
-            self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.csv_path}）", error=True)
+        warn = f"　⚠ {rec.note}" if rec.note else ""
+        msg = f"No.{rec.no}：{sub}" if sub else f"No.{rec.no} を記録しました"
+        msg += f"（{rec.voltage_V:.4f} V　{rec.judge.label}）{warn}"
+        if self.continuous and not sub:
+            msg += "　バッテリを外してください"
+        self.set_message(msg, error=not rec.judge.is_ok)  # NG は赤字
         self._update_display(force=True)
         self.last_latency_s = time.monotonic() - self._pressed_mono
         if self.settings.sound and not sounded:
@@ -865,8 +872,13 @@ class MainWindow(QMainWindow):
     def _save_workfile(self, appended: bool = False) -> None:
         if self.workfile is None or self.lot is None or self.book is None:
             return
-        if not self.workfile.save(self.lot, self.book, appended=appended):
+        self.workfile.save_async(self.lot, self.book, appended=appended)
+
+    def _on_workfile_saved(self, ok: bool, error: str) -> None:
+        """作業ファイルの書き込みが終わった（書き込みのスレッドから、画面のスレッドに届く）。"""
+        if not ok and self.workfile is not None:
             self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.csv_path}）", error=True)
+        self._update_status()
 
     # ================================================================ F-06 取り消し
     def on_undo(self) -> None:
@@ -973,12 +985,17 @@ class MainWindow(QMainWindow):
         return True
 
     def _open_lot(self, info: LotInfo, book: RecordBook, wf: WorkFile) -> None:
+        if self.workfile is not None and self.workfile is not wf:
+            self.workfile.close()
+        wf.on_saved = self._save_signals.done.emit  # 書き込みのスレッドから呼ばれる
         self.lot, self.book, self.workfile = info, book, wf
         self.remeasure_no = None
         self.monitor.detached_since_mark = True
         self._show_lot()
 
     def _close_lot(self) -> None:
+        if self.workfile is not None:
+            self.workfile.close()  # 残りを書いてから閉じる
         self.lot = self.book = self.workfile = None
         self.remeasure_no = None
         self.continuous = False
@@ -1207,6 +1224,8 @@ class MainWindow(QMainWindow):
             self.reader.stop()
             self.reader = None
         self.poll_timer.stop()
+        if self.workfile is not None:
+            self.workfile.close()  # 頼んである書き込みを終えてから閉じる
         QApplication.instance().removeEventFilter(self)
         self.settings.save(self.paths.settings_file)
         event.accept()
