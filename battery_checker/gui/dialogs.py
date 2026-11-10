@@ -266,10 +266,11 @@ class LotDialog(QDialog):
         super().__init__(parent)
         self.editing = editing
         self.setWindowTitle("ロット設定" if editing else "新しいロット")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(480)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 12)
         lay.setSpacing(10)
+        lay.setSizeConstraint(QVBoxLayout.SetFixedSize)  # 中身の大きさに合わせる（メモ欄が間延びしない）
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
@@ -300,7 +301,7 @@ class LotDialog(QDialog):
         self.start_spin.setEnabled(not editing)
         self.memo_edit = QPlainTextEdit(initial.memo)
         self.memo_edit.setFont(ui_font(14))
-        self.memo_edit.setMinimumHeight(QFontMetrics(self.memo_edit.font()).lineSpacing() * 3 + 18)
+        self.memo_edit.setFixedHeight(QFontMetrics(self.memo_edit.font()).lineSpacing() * 3 + 18)  # 3 行
         self.memo_edit.setTabChangesFocus(True)
 
         # 並び：ロット名 → 開始番号 → 測定者 → 電圧（下限・上限・バー） → メモ

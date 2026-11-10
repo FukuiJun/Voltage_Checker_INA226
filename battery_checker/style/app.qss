@@ -323,7 +323,7 @@ QPushButton#recordButton:disabled {
 /* 出力・新しいロット・ロット終了 */
 QPushButton#exportButton, QPushButton#newLotButton, QPushButton#endLotButton {
     border-radius: 8px;
-    padding: 0 22px;
+    padding: 0 8px;
     min-height: 44px;
 }
 QPushButton#exportButton { background: ${save_bg}; color: ${save_text}; border: none; }

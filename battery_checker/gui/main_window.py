@@ -61,7 +61,7 @@ from ..workfile import WorkFile, cleanup_finished, find_unfinished, finish_lot, 
 from .dialogs import ExportDialog, LotDialog, LotInput, SettingsDialog
 from .plot_panel import DistributionPlot
 from .record_table import RecordTablePanel
-from .widgets import ElideLabel, FitLabel, NumberCard, divider, sub_label
+from .widgets import ElideLabel, FitLabel, NumberCard, divider
 
 log = logging.getLogger(__name__)
 
@@ -132,8 +132,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
         self.setWindowIcon(app_icon())
-        self.resize(1280, 800)
-        self.setMinimumSize(1024, 700)
+        self._fit_to_screen()
         self._build_ui()
 
         self.poll_timer = QTimer(self)
@@ -171,17 +170,6 @@ class MainWindow(QMainWindow):
         self.plot.limits_changed.connect(self.on_limits_dragged)
         right.addWidget(self.table, 55)
         right.addWidget(self.plot, 45)
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
-        actions.addStretch(1)
-        # 右下のボタン：開始 → 終了 → 出力
-        self.new_lot_button = self._button("開始", "newLotButton", self.on_new_lot, 15)
-        self.end_lot_button = self._button("終了", "endLotButton", self.on_end_lot, 15)
-        self.export_button = self._button("出力（CSV・Excel）", "exportButton", self.on_export, 15)
-        for b in (self.new_lot_button, self.end_lot_button, self.export_button):
-            b.setMinimumWidth(130)
-            actions.addWidget(b)
-        right.addLayout(actions)
         body.addLayout(right, 1)
         root.addLayout(body, 1)
 
@@ -193,6 +181,21 @@ class MainWindow(QMainWindow):
         root.addWidget(self.summary_label)
         self.setCentralWidget(central)
         self._build_status_bar()
+
+    def _fit_to_screen(self) -> None:
+        """最初の大きさ：1280×800（タスクバーを除いた画面に収まらなければ縮める）。最小は 1024×700。"""
+        w, h, min_w, min_h = 1280, 800, 1024, 700
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w, h = min(w, avail.width() - 40), min(h, avail.height() - 40)
+            min_w, min_h = min(min_w, w), min(min_h, h)
+            self.setMinimumSize(min_w, min_h)
+            self.resize(w, h)
+            self.move(avail.center().x() - w // 2, avail.center().y() - (h + 32) // 2)
+        else:
+            self.setMinimumSize(min_w, min_h)
+            self.resize(w, h)
 
     def _button(self, text: str, name: str, slot, px: int = 14, bold: bool = True) -> QPushButton:
         b = QPushButton(text)
@@ -313,22 +316,27 @@ class MainWindow(QMainWindow):
             row.addWidget(b, 1)
         lay.addLayout(row)
 
-        # 7. 下限・上限
-        lay.addWidget(divider())
-        row = QHBoxLayout()
-        self.limits_label = QLabel()
-        self.limits_label.setFont(mono_font(14, bold=True))
-        row.addWidget(sub_label("判定"))
-        row.addWidget(self.limits_label, 1)
-        lay.addLayout(row)
-        row = QHBoxLayout()
-        self.lot_detail_label = sub_label("", 12)
-        self.lot_detail_label.setWordWrap(True)
-        row.addWidget(self.lot_detail_label, 1)
-        self.lot_settings_button = self._button("ロット設定…", "lotSettingsButton", self.on_lot_settings, 13, bold=False)
-        row.addWidget(self.lot_settings_button, 0, Qt.AlignTop)
-        lay.addLayout(row)
+        # 7. ロットの操作（左下）：ロット設定、開始 → 終了 → 出力
         lay.addStretch(1)
+        lay.addWidget(divider())
+        self.lot_settings_button = self._button("ロット設定…", "lotSettingsButton", self.on_lot_settings, 13, bold=False)
+        self.lot_settings_button.setMinimumHeight(36)
+        self.lot_settings_button.setToolTip("ロット名・測定者・上下限・メモを変えます")
+        lay.addWidget(self.lot_settings_button)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.new_lot_button = self._button("開始", "newLotButton", self.on_new_lot, 15)
+        self.end_lot_button = self._button("終了", "endLotButton", self.on_end_lot, 15)
+        self.export_button = self._button("出力", "exportButton", self.on_export, 15)
+        self.new_lot_button.setToolTip("新しいロットを始めます")
+        self.end_lot_button.setToolTip("ロットを終了します（CSV・Excel に出力するか聞きます）")
+        self.export_button.setToolTip("CSV と Excel に出力します（ロットは終了しません）")
+        for b in (self.new_lot_button, self.end_lot_button, self.export_button):
+            b.setFixedHeight(46)
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            b.setMinimumWidth(0)
+            row.addWidget(b, 1)
+        lay.addLayout(row)
 
         scroll = QScrollArea()
         scroll.setObjectName("leftScroll")
@@ -501,16 +509,11 @@ class MainWindow(QMainWindow):
         """ロットが変わったとき：ヘッダー・判定・一覧・グラフ・集計を描き直す。"""
         lot, book = self.lot, self.book
         if lot is None or book is None:
-            self.lot_label.setText("ロットなし")
-            self.limits_label.setText("---")
-            self.lot_detail_label.setText("「開始」でロットを始めます")
+            self.lot_label.setText("ロットなし（左下の「開始」で始めます）")
             self.table.model.set_book(RecordBook())
             self.plot.set_limits(None, None)
         else:
             self.lot_label.setText(f"{lot.lot_name} ／ {lot.limits_text()}")
-            self.limits_label.setText(f"{lot.lower_V:.3f} 〜 {lot.upper_V:.3f} V")
-            who = f"測定者（社員番号）{lot.operator}　" if lot.operator else ""
-            self.lot_detail_label.setText(f"{who}開始 {lot.started_at}")
             self.table.model.set_book(book)
             self.plot.set_limits(lot.lower_V, lot.upper_V)
             self.table.select_no(book.last.no if book.last else None)

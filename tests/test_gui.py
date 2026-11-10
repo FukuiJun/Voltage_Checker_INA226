@@ -109,7 +109,7 @@ def test_initial_button_states(make_window, qapp):
     assert not w.export_button.isEnabled() and not w.end_lot_button.isEnabled()
     assert w.new_lot_button.isEnabled() and w.connect_button.isEnabled() and w.port_combo.isEnabled()
     assert w.connect_button.text() == "接続"
-    assert w.lot_label.text() == "ロットなし"
+    assert w.lot_label.text().startswith("ロットなし")
     assert w.number_card.number == "---" and w.number_card.property("mode") == "none"
 
 
@@ -369,7 +369,7 @@ def test_export_and_end_lot(make_window, qapp, tmp_path):
     w.answers = ["no"]
     assert w.on_end_lot()
     assert "CSV・Excel 出力しますか？" in w.asked[-1]
-    assert w.lot is None and w.lot_label.text() == "ロットなし"
+    assert w.lot is None and w.lot_label.text().startswith("ロットなし")
     from battery_checker.workfile import find_unfinished
 
     assert find_unfinished(w.paths.lots_dir) == []
@@ -811,9 +811,13 @@ def test_lot_dialog_field_order(qapp):
 def test_bottom_buttons_labels_and_order(make_window, qapp):
     w = make_window()
     buttons = [w.new_lot_button, w.end_lot_button, w.export_button]
-    assert [b.text() for b in buttons] == ["開始", "終了", "出力（CSV・Excel）"]
+    assert [b.text() for b in buttons] == ["開始", "終了", "出力"]
     xs = [b.mapTo(w, b.rect().topLeft()).x() for b in buttons]
     assert xs == sorted(xs)  # 左から 開始 → 終了 → 出力
+    # 左パネルの一番下（記録ボタンより下）にある
+    ys = [b.mapTo(w, b.rect().topLeft()).y() for b in buttons]
+    assert min(ys) > w.record_button.mapTo(w, w.record_button.rect().topLeft()).y()
+    assert all(w.left_scroll.isAncestorOf(b) for b in buttons)
 
 
 def test_end_asks_export_yes_exports_then_ends(make_window, qapp, tmp_path):
