@@ -146,7 +146,7 @@ def list_lots(lots_dir: Path) -> list[LotEntry]:
 
 
 def find_unfinished(lots_dir: Path) -> list[LotEntry]:
-    """終了していない（出力も「ロット終了」もしていない）ロット。新しい順。"""
+    """終了していない（「終了」していない）ロット。新しい順。"""
     return [e for e in list_lots(lots_dir) if not e.info.finished and e.csv_path.exists()]
 
 
@@ -214,7 +214,7 @@ def load_lot(entry: LotEntry) -> tuple[LotState, WorkFile]:
 
 
 def finish_lot(wf: WorkFile, info: LotInfo, when: datetime | None = None) -> bool:
-    """「ロット終了」：作業ファイルを終了扱いにする（ファイルは RETENTION_DAYS 日残す）。"""
+    """「終了」：作業ファイルを終了扱いにする（ファイルは RETENTION_DAYS 日残す）。"""
     info.finished = True
     info.finished_at = (when or datetime.now()).strftime(DATETIME_FMT)
     return wf.save_info(info)

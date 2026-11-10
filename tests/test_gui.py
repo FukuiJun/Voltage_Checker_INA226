@@ -364,11 +364,11 @@ def test_export_and_end_lot(make_window, qapp, tmp_path):
     assert names == [f"{base}.csv", f"{base}.xlsx"]
     assert w.msg_label.text().startswith(f"保存しました：{out}")
     assert w.lot is not None and not w.lot.unexported
-    # 続けて記録できる。出力していない記録があればロット終了で確認する
+    # 続けて記録できる。「終了」では出力するか聞く（いいえ → 出力せずに終了）
     assert record_and_wait(w, qapp)
-    w.answers = ["end"]
+    w.answers = ["no"]
     assert w.on_end_lot()
-    assert w.asked[-1].startswith("出力していない記録があります")
+    assert "CSV・Excel 出力しますか？" in w.asked[-1]
     assert w.lot is None and w.lot_label.text() == "ロットなし"
     from battery_checker.workfile import find_unfinished
 
@@ -805,3 +805,44 @@ def test_lot_dialog_field_order(qapp):
             chain.append(w)
         w = w.nextInFocusChain()
     assert chain == expected
+
+
+# ================================================================ 右下のボタン（開始・終了・出力）と「終了」
+def test_bottom_buttons_labels_and_order(make_window, qapp):
+    w = make_window()
+    buttons = [w.new_lot_button, w.end_lot_button, w.export_button]
+    assert [b.text() for b in buttons] == ["開始", "終了", "出力（CSV・Excel）"]
+    xs = [b.mapTo(w, b.rect().topLeft()).x() for b in buttons]
+    assert xs == sorted(xs)  # 左から 開始 → 終了 → 出力
+
+
+def test_end_asks_export_yes_exports_then_ends(make_window, qapp, tmp_path):
+    w = _lot_with_records(make_window, [3.8, 3.9, 4.0])
+    w.answers = ["yes"]
+    assert w.on_end_lot()
+    assert len(w.asked) == 1 and "CSV・Excel 出力しますか？" in w.asked[0]  # 出力のあとにもう一度は聞かない
+    out = tmp_path / "out"
+    assert sorted(p.suffix for p in out.iterdir()) == [".csv", ".xlsx"]
+    assert w.export_defaults and "_0001-0003_" in w.export_defaults[0]
+    assert w.lot is None
+    assert w.msg_label.text().startswith(f"保存しました：{out}") and "終了しました" in w.msg_label.text()
+
+
+def test_end_cancel_or_export_cancelled_keeps_lot(make_window, qapp, tmp_path):
+    w = _lot_with_records(make_window, [3.8])
+    w.answers = ["cancel"]
+    assert not w.on_end_lot() and w.lot is not None
+    # 「はい」でも、出力の画面でやめたら終了しない
+    w._ask_export = lambda default: None
+    w.answers = ["yes"]
+    assert not w.on_end_lot() and w.lot is not None
+    assert "終了していません" in w.msg_label.text()
+    assert not (tmp_path / "out").exists()
+
+
+def test_end_without_records_only_confirms(make_window, qapp):
+    w = make_window()
+    w.start_lot(LOT)
+    w.answers = ["end"]
+    assert w.on_end_lot()
+    assert w.asked == ["ロット（LOT-A12）を終了しますか？"] and w.lot is None

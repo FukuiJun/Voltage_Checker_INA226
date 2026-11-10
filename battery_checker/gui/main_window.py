@@ -72,7 +72,7 @@ LEFT_PANEL_WIDTH = 360
 
 MSG_NO_PORT = "Arduino が見つかりません。USB の接続を確認してください"
 MSG_NOT_CONNECTED = "Arduino に接続してください（ポートを選んで「接続」）"
-MSG_NO_LOT = "ロットを始めてください（「新しいロット」）"
+MSG_NO_LOT = "ロットを始めてください（「開始」）"
 MSG_NO_BATTERY = "バッテリが接続されていません"
 MSG_NO_DATA = "データが届いていません"
 MSG_DISCONNECTED = "Arduino との接続が切れました"
@@ -174,10 +174,11 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout()
         actions.setSpacing(10)
         actions.addStretch(1)
-        self.new_lot_button = self._button("新しいロット", "newLotButton", self.on_new_lot, 15)
+        # 右下のボタン：開始 → 終了 → 出力
+        self.new_lot_button = self._button("開始", "newLotButton", self.on_new_lot, 15)
+        self.end_lot_button = self._button("終了", "endLotButton", self.on_end_lot, 15)
         self.export_button = self._button("出力（CSV・Excel）", "exportButton", self.on_export, 15)
-        self.end_lot_button = self._button("ロット終了", "endLotButton", self.on_end_lot, 15)
-        for b in (self.new_lot_button, self.export_button, self.end_lot_button):
+        for b in (self.new_lot_button, self.end_lot_button, self.export_button):
             b.setMinimumWidth(130)
             actions.addWidget(b)
         right.addLayout(actions)
@@ -502,7 +503,7 @@ class MainWindow(QMainWindow):
         if lot is None or book is None:
             self.lot_label.setText("ロットなし")
             self.limits_label.setText("---")
-            self.lot_detail_label.setText("「新しいロット」で始めます")
+            self.lot_detail_label.setText("「開始」でロットを始めます")
             self.table.model.set_book(RecordBook())
             self.plot.set_limits(None, None)
         else:
@@ -1039,31 +1040,58 @@ class MainWindow(QMainWindow):
         self.apply_lot_settings(LotInput(lot.lot_name, lot.operator, lower_V, upper_V, lot.start_no, lot.memo))
 
     def on_end_lot(self, confirm: bool = True) -> bool:
-        """「ロット終了」。終了したら True。"""
+        """「終了」：ロットを終了する。終了したら True。
+
+        記録があれば「CSV・Excel 出力しますか？」と聞く。
+          はい → 出力の画面 → 出力できたら終了（出力をやめた・失敗したら終了しない）
+          いいえ → 出力せずに終了 ／ キャンセル → 終了しない
+        記録が無ければ「終了しますか？」だけ聞く。confirm=False は聞かずに終了する。
+        """
         if self.lot is None or self.busy:
             return False
+        exported_to: str | None = None
         if confirm:
-            if self.lot.unexported and len(self.book) > 0:
-                text = f"出力していない記録があります。ロット（{self.lot.lot_name}）を終了しますか？"
-            else:
-                text = f"ロット（{self.lot.lot_name}）を終了しますか？"
-            if self._ask(text, [("end", "終了する"), ("cancel", "やめる")], escape="cancel") != "end":
+            if len(self.book) > 0:
+                ans = self._ask(
+                    f"ロット（{self.lot.lot_name}、{len(self.book):,} 件）を終了します。\nCSV・Excel 出力しますか？",
+                    [("yes", "はい"), ("no", "いいえ"), ("cancel", "キャンセル")],
+                    escape="cancel",
+                )
+                if ans == "cancel":
+                    return False
+                if ans == "yes":
+                    exported_to = self._export(ask_end=False)
+                    if exported_to is None:
+                        self.set_message("出力しなかったので、ロットは終了していません", error=True)
+                        return False
+            elif self._ask(
+                f"ロット（{self.lot.lot_name}）を終了しますか？", [("end", "終了する"), ("cancel", "やめる")], escape="cancel"
+            ) != "end":
                 return False
         name = self.lot.lot_name
         if not finish_lot(self.workfile, self.lot):
             self.set_message(f"{MSG_WORKFILE_ERROR}（{self.workfile.json_path}）", error=True)
         self._close_lot()
-        self.set_message(f"ロット {name} を終了しました")
+        if exported_to is not None:
+            self.set_message(f"保存しました：{exported_to}（ロット {name} を終了しました）")
+            self.open_folder_button.setVisible(True)
+        else:
+            self.set_message(f"ロット {name} を終了しました")
         return True
 
     # ================================================================ F-09 出力
     def on_export(self) -> None:
+        """「出力」ボタン。出力のあと「ロットを終了しますか？」と聞く。"""
+        self._export(ask_end=True)
+
+    def _export(self, ask_end: bool) -> str | None:
+        """CSV・Excel を出力する。出力したフォルダを返す（やめた・失敗したら None）。"""
         if self.lot is None or not self.book or self.busy:
-            return
+            return None
         lot = self.lot
         answer = self._ask_export(default_base(lot, self.book.records))
         if not answer:
-            return
+            return None
         folder, base = answer
         cond = Conditions(
             port=lot.port or self._device,
@@ -1077,7 +1105,7 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
             self.set_message(str(e), error=True)
             self._warn(str(e))
-            return
+            return None
         QApplication.restoreOverrideCursor()
         lot.exported_revision = lot.revision
         lot.last_export_dir = str(folder)
@@ -1090,11 +1118,13 @@ class MainWindow(QMainWindow):
         self.set_message(f"保存しました：{folder}（{res.base}.csv / .xlsx）")
         self.open_folder_button.setVisible(True)
         self.last_export = res
-        ans = self._ask("出力しました。ロットを終了しますか？", [("end", "終了する"), ("continue", "続ける")], escape="continue")
-        if ans == "end":
-            self.on_end_lot(confirm=False)
-            self.set_message(f"保存しました：{folder}（ロットを終了しました）")
-            self.open_folder_button.setVisible(True)
+        if ask_end:
+            ans = self._ask("出力しました。ロットを終了しますか？", [("end", "終了する"), ("continue", "続ける")], escape="continue")
+            if ans == "end":
+                self.on_end_lot(confirm=False)
+                self.set_message(f"保存しました：{folder}（ロットを終了しました）")
+                self.open_folder_button.setVisible(True)
+        return str(folder)
 
     def _open_saved_folder(self) -> None:
         if self._saved_folder:
